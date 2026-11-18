@@ -1,14 +1,26 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Activity, ArrowDownLeft, ArrowRight, ArrowUpRight, BadgeCheck, BarChart3, Check, CircleHelp, Command, Fingerprint, KeyRound, LayoutDashboard, LoaderCircle, LockKeyhole, LogOut, Moon, Radio, RefreshCw, ScanLine, ShieldCheck, SlidersHorizontal, Sun, UserRound } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Activity, AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, BadgeCheck, BarChart3, Check, CircleHelp, Code2, Command, Fingerprint, KeyRound, LayoutDashboard, LoaderCircle, LockKeyhole, LogOut, Moon, Radio, RefreshCw, ScanLine, ShieldCheck, SlidersHorizontal, Sun, TrendingUp, UserRound } from 'lucide-react'
+import { AutoTradePanel, StrategyLibraryPanel } from './TradingPanels'
+import { OverviewPanel, ActivityPanel } from './AccountPanels'
+import { NumberField, RetainedPanel } from './FormControls'
 
 const configuredApi = import.meta.env.VITE_API_URL?.trim().replace(/\/+$/, '')
-const API = configuredApi || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin)
+// Vite proxies local /api and /ws requests to FastAPI, so the browser keeps one
+// origin even when Vite falls back from 5173 to 5174/5175.
+const API = configuredApi || window.location.origin
 
-async function request(path, options) {
-  const response = await fetch(`${API}${path}`, { credentials: 'include', ...options })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.detail || 'Something went wrong. Please try again.')
-  return data
+async function request(path, options = {}) {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), 90000)
+  try {
+    const response = await fetch(`${API}${path}`, { credentials: 'include', ...options, signal: options.signal || controller.signal })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${response.status}). Please review the fields and retry.`)
+    return data
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error(path === '/api/scanner-data' ? 'Loading scanner data timed out. The market-data refresh may still be running; wait a moment and retry.' : 'The request timed out. Check Activity and Kite before retrying a trade; its outcome may be uncertain.')
+    throw e
+  } finally { window.clearTimeout(timer) }
 }
 
 function extractRequestToken(input) {
@@ -40,7 +52,7 @@ function Login({ onLogin, busy, error, theme, onThemeToggle }) {
   const submit = (e) => { e.preventDefault(); onLogin({ api_key: apiKey, api_secret: apiSecret, request_token: extractRequestToken(requestToken) }) }
 
   return <main className="login-page">
-    <div className="login-top"><Brand /><div className="login-top-actions"><span className="secure-note"><LockKeyhole size={13} /> PRIVATE LOCAL SESSION</span><ThemeToggle theme={theme} onToggle={onThemeToggle} /></div></div>
+    <div className="login-top"><Brand /><div className="login-top-actions"><span className="secure-note"><LockKeyhole size={13} /> PRIVATE SESSION</span><ThemeToggle theme={theme} onToggle={onThemeToggle} /></div></div>
     <div className="login-layout">
       <section className="login-copy">
         <div className="eyebrow"><span className="live-dot" /> YOUR TRADING WORKSPACE</div>
@@ -62,55 +74,99 @@ function Login({ onLogin, busy, error, theme, onThemeToggle }) {
         <div className="redirect-note"><span>Using another device?</span><small>Sign in to Kite there, copy its request_token value, then paste it above. Request tokens are short-lived, so connect soon after generating one.</small></div>
       </section>
     </div>
-    <div className="login-footer"><span>© {new Date().getFullYear()} Kite Console</span><span><span className="footer-dot" /> Local connection active</span></div>
+    <div className="login-footer"><span>© {new Date().getFullYear()} Kite Console</span><span><span className="footer-dot" /> Kite Connect ready</span></div>
   </main>
 }
 
 function Dashboard({ onLogout, theme, onThemeToggle }) {
-  const [tab, setTab] = useState('User')
+  const [tab, setTab] = useState('Overview')
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [toasts, setToasts] = useState([])
+  const [jobs, setJobs] = useState({})
+  const jobHandlers = useMemo(() => Object.fromEntries(['Signals', 'Algo Signals', 'Auto Trade'].map(name => [name, busy => setJobs(current => current[name] === busy ? current : { ...current, [name]: busy })])), [])
+  const seenEventIds = useRef(new Set())
+  const notify = useCallback((title, message, level = 'info') => {
+    const id = `${Date.now()}-${Math.random()}`
+    setToasts(current => [...current.slice(-3), { id, title, message, level }])
+    window.setTimeout(() => setToasts(current => current.filter(item => item.id !== id)), 6500)
+  }, [])
+  useEffect(() => {
+    let alive = true
+    let primed = false
+    const pollEvents = async () => {
+      try {
+        const data = await request('/api/auto-trade/events')
+        if (!alive) return
+        for (const event of (data.events || []).reverse()) {
+          if (seenEventIds.current.has(event.id)) continue
+          seenEventIds.current.add(event.id)
+          if (primed) notify(event.title, event.message, event.level)
+        }
+        primed = true
+        if (seenEventIds.current.size > 200) seenEventIds.current = new Set([...seenEventIds.current].slice(-100))
+      } catch { /* trading notifications are also persisted in Redis for review */ }
+    }
+    pollEvents(); const timer = window.setInterval(pollEvents, 15000)
+    return () => { alive = false; window.clearInterval(timer) }
+  }, [notify])
   const loadProfile = useCallback(async () => {
     setLoading(true); setError('')
     try { setProfile(await request('/api/user/profile')) } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }, [])
+  const signOut = async () => {
+    try { await onLogout() }
+    catch (e) { notify('Sign out needs review', e.message, 'warning') }
+  }
   useEffect(() => { loadProfile() }, [loadProfile])
-  const tabs = [{ name: 'Overview', icon: LayoutDashboard }, { name: 'User', icon: UserRound }, { name: 'Signals', icon: Radio }, { name: 'Algo Signals', icon: ScanLine }, { name: 'Activity', icon: BarChart3 }]
+  const tabs = [{ name: 'Overview', icon: LayoutDashboard }, { name: 'User', icon: UserRound }, { name: 'Signals', icon: Radio }, { name: 'Algo Signals', icon: ScanLine }, { name: 'Strategies', icon: Code2 }, { name: 'Auto Trade', icon: TrendingUp }, { name: 'Activity', icon: BarChart3 }]
 
   return <div className="dashboard-shell">
-    <aside className="sidebar"><Brand /><div className="side-section-label">WORKSPACE</div><nav>{tabs.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${tab === name ? 'active' : ''}`} onClick={() => setTab(name)}><Icon size={17} /><span>{name}</span>{name === 'User' && <span className="nav-indicator" />}</button>)}</nav><div className="sidebar-bottom"><div className="help-link"><CircleHelp size={16} /><span>Need a hand?</span><ArrowUpRight size={14} /></div><div className="sidebar-user"><div className="avatar">{profile?.user_name?.slice(0, 1) || 'K'}</div><div className="side-user-name"><strong>{profile?.user_name || 'Kite account'}</strong><small>{profile?.user_id || 'Connected workspace'}</small></div><button className="icon-button" aria-label="Sign out" onClick={onLogout}><LogOut size={16} /></button></div></div></aside>
-    <main className="dashboard-main"><header className="topbar"><div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>{tab}</strong></div><div className="top-actions"><div className="connection-pill"><span className="live-dot" /> Connected</div><ThemeToggle theme={theme} onToggle={onThemeToggle} /><button className="icon-button top-avatar" title="Account"><UserRound size={17} /></button></div></header>
-      <div className="content-area"><div className="page-title-row"><div><div className="eyebrow page-eyebrow">{tab === 'Signals' ? 'MARKET SCANNER' : tab === 'Algo Signals' ? 'ALGO SIGNALS' : 'ACCOUNT MANAGEMENT'}</div><h1>{tab === 'User' ? 'Your profile' : tab === 'Algo Signals' ? 'High-volume breakout and retest setups' : tab}</h1><p>{tab === 'User' ? 'Your Zerodha account details and permissions.' : tab === 'Overview' ? 'Your connected trading workspace at a glance.' : tab === 'Signals' ? 'Find recent moving average crossovers across Nifty 100.' : tab === 'Algo Signals' ? 'Daily volume breakouts that return to retest the breakout midpoint.' : 'Recent account activity will appear here.'}</p></div>{tab === 'User' && <button className="secondary-button" onClick={loadProfile} disabled={loading}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>}</div>
-        {tab === 'User' ? <>
+    <aside className="sidebar"><Brand /><div className="side-section-label">WORKSPACE</div><nav>{tabs.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${tab === name ? 'active' : ''}`} onClick={() => setTab(name)}><Icon size={17} /><span>{name}</span>{name === 'User' && <span className="nav-indicator" />}</button>)}</nav><div className="sidebar-bottom"><a href="https://kite.trade/docs/connect/v3/" target="_blank" rel="noreferrer" className="help-link"><CircleHelp size={16} /><span>Kite documentation</span><ArrowUpRight size={14} /></a><div className="sidebar-user"><div className="avatar">{profile?.user_name?.slice(0, 1) || 'K'}</div><div className="side-user-name"><strong>{profile?.user_name || 'Kite account'}</strong><small>{profile?.user_id || 'Connected workspace'}</small></div><button className="icon-button" aria-label="Sign out" onClick={signOut}><LogOut size={16} /></button></div></div></aside>
+    <main className="dashboard-main"><header className="topbar"><div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>{tab}</strong></div><div className="top-actions"><div className="connection-pill"><span className="live-dot" /> Connected</div><ThemeToggle theme={theme} onToggle={onThemeToggle} /><button className="icon-button top-avatar" title="Account" onClick={() => setTab('User')}><UserRound size={17} /></button></div></header>
+      <div className="content-area"><div className="page-title-row"><div><div className="eyebrow page-eyebrow">{tab === 'Signals' ? 'MARKET SCANNER' : tab === 'Algo Signals' ? 'ALGO SIGNALS' : tab === 'Strategies' ? 'LOGIC LIBRARY' : tab === 'Auto Trade' ? 'RISK CONTROLLED EXECUTION' : 'ACCOUNT MANAGEMENT'}</div><h1>{tab === 'User' ? 'Your profile' : tab === 'Algo Signals' ? 'High-volume breakout and retest setups' : tab === 'Strategies' ? 'Strategy logic library' : tab === 'Auto Trade' ? 'Auto Trade' : tab}</h1><p>{tab === 'User' ? 'Your Zerodha account details and permissions.' : tab === 'Overview' ? 'Capital, account health, and execution controls in one place.' : tab === 'Signals' ? 'Find recent moving average crossovers across Nifty 100.' : tab === 'Algo Signals' ? 'Daily volume breakouts that return to retest the breakout midpoint.' : tab === 'Strategies' ? 'Saved strategies and parameters.' : tab === 'Auto Trade' ? 'Strategy execution' : 'Review managed orders, worker alerts, and account events.'}</p></div>{tab === 'User' && <button className="secondary-button" onClick={loadProfile} disabled={loading}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>}</div>
+        {Object.keys(jobs).some(name => jobs[name] && name !== tab) && <div className="background-jobs" role="status">{Object.keys(jobs).filter(name => jobs[name] && name !== tab).map(name => <button type="button" className="workspace-job" key={name} onClick={() => setTab(name)}><LoaderCircle size={12} className="spin" />{name} running</button>)}</div>}
+        <RetainedPanel active={tab === 'User'} name="User"><>
           <div className="profile-banner"><div className="banner-glow" /><div className="banner-main"><div className="profile-avatar">{profile?.user_name?.slice(0, 1) || <UserRound size={25} />}</div><div><span className="banner-overline">ZERODHA ACCOUNT</span><h2>{loading ? 'Loading profile…' : profile?.user_name || 'Account profile'}</h2><span className="account-id">{profile?.user_id ? `User ID · ${profile.user_id}` : 'Your connected account'}</span></div></div><div className="verified-badge"><BadgeCheck size={15} /> Verified connection</div></div>
           {error ? <div className="error-panel"><div><strong>We couldn’t load your profile</strong><p>{error}</p></div><button className="secondary-button" onClick={loadProfile}><RefreshCw size={15} /> Try again</button></div> : <div className="profile-grid">
             <section className="info-card identity-card"><div className="section-title"><div className="section-icon"><UserRound size={17} /></div><div><h3>Account details</h3><p>Identity linked to this session</p></div></div><div className="details-list"><Detail label="Full name" value={profile?.user_name} loading={loading} /><Detail label="User ID" value={profile?.user_id} mono loading={loading} /><Detail label="Email address" value={profile?.email} loading={loading} /></div></section>
             <section className="info-card"><div className="section-title"><div className="section-icon green"><ArrowDownLeft size={17} /></div><div><h3>Products</h3><p>Products enabled for your account</p></div></div><ChipList values={profile?.products} loading={loading} empty="No products available" /></section>
             <section className="info-card exchanges-card"><div className="section-title"><div className="section-icon violet"><BarChart3 size={17} /></div><div><h3>Exchanges</h3><p>Markets available to your account</p></div></div><ChipList values={profile?.exchanges} loading={loading} empty="No exchanges available" /></section>
           </div>}
-          <div className="security-callout"><div className="security-check"><Check size={15} /></div><div><strong>Your session is stored locally</strong><p>Kite access tokens are kept on the backend and are never sent to your browser.</p></div><LockKeyhole className="callout-lock" size={17} /></div>
-        </> : tab === 'Signals' ? <SignalsPanel /> : tab === 'Algo Signals' ? <AlgoSignalsPanel /> : <section className="empty-state"><div className="empty-icon">{tab === 'Overview' ? <BarChart3 size={24} /> : <Activity size={24} />}</div><h2>{tab === 'Overview' ? 'Your workspace is ready' : 'No activity yet'}</h2><p>{tab === 'Overview' ? 'Your account is connected. Your profile and permissions are available in the User tab.' : 'This space is ready for account activity and updates.'}</p><button className="secondary-button" onClick={() => setTab('User')}>View your profile <ArrowRight size={15} /></button></section>}
-      </div><footer className="dashboard-footer"><span>Kite Console <span className="footer-sep">·</span> Private workspace</span><span><span className="live-dot" /> API connection healthy</span></footer>
+          <div className="security-callout"><div className="security-check"><Check size={15} /></div><div><strong>Your session stays server-side</strong><p>Your Kite access token is encrypted at rest and never sent to your browser. Strategies are scoped to this verified Kite account.</p></div><LockKeyhole className="callout-lock" size={17} /></div>
+        </></RetainedPanel>
+        <RetainedPanel active={tab === 'Signals'} name="Signals"><SignalsPanel notify={notify} onBusyChange={jobHandlers.Signals} /></RetainedPanel>
+        <RetainedPanel active={tab === 'Algo Signals'} name="Algo Signals"><AlgoSignalsPanel notify={notify} onBusyChange={jobHandlers['Algo Signals']} /></RetainedPanel>
+        <RetainedPanel active={tab === 'Strategies'} name="Strategies"><StrategyLibraryPanel request={request} notify={notify} /></RetainedPanel>
+        <RetainedPanel active={tab === 'Auto Trade'} name="Auto Trade"><AutoTradePanel request={request} notify={notify} active={tab === 'Auto Trade'} onBusyChange={jobHandlers['Auto Trade']} /></RetainedPanel>
+        <RetainedPanel active={tab === 'Overview'} name="Overview"><OverviewPanel request={request} notify={notify} navigate={setTab} /></RetainedPanel>
+        <RetainedPanel active={tab === 'Activity'} name="Activity"><ActivityPanel request={request} notify={notify} /></RetainedPanel>
+      </div><footer className="dashboard-footer"><span>Kite Console <span className="footer-sep">·</span> Private workspace</span><span><ShieldCheck size={12} /> Kite Connect</span></footer>
+      {toasts.length > 0 && <div className="toast-stack" aria-live="polite" aria-relevant="additions">{toasts.map(item => <div className={`toast-card ${item.level}`} key={item.id}><span className="toast-mark">{item.level === 'error' || item.level === 'warning' ? <ShieldCheck size={15} /> : <Check size={15} />}</span><div><strong>{item.title}</strong><p>{item.message}</p></div><button className="toast-dismiss" onClick={() => setToasts(current => current.filter(toast => toast.id !== item.id))} aria-label="Dismiss notification">×</button></div>)}</div>}
     </main>
   </div>
 }
 
-function SignalsPanel() {
+function SignalsPanel({ notify, onBusyChange }) {
   const [settings, setSettings] = useState({ short_sma: 6, long_sma: 30, lookback_days: 30, max_stocks: 25 })
   const [payload, setPayload] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const update = (key) => (event) => setSettings(current => ({ ...current, [key]: Number(event.target.value) }))
+  useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
+  const update = (key) => value => setSettings(current => ({ ...current, [key]: value }))
   const generate = async (event) => {
     event.preventDefault()
+    if (busy) return
+    if (Object.values(settings).some(value => !Number.isInteger(value))) { setError('Enter a whole number in each scanner field.'); return }
     if (settings.short_sma >= settings.long_sma) { setError('Short SMA must be smaller than Long SMA.'); return }
     setBusy(true); setError('')
     try {
       const data = await request('/api/signals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) })
       setPayload(data)
-    } catch (e) { setError(e.message) }
+      notify?.('Signals ready', `${data.results.length} crossovers across ${data.scanned} stocks.`, 'success')
+    } catch (e) { setError(e.message); notify?.('Signal scan failed', e.message, 'error') }
     finally { setBusy(false) }
   }
   const money = (value) => new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)
@@ -123,15 +179,15 @@ function SignalsPanel() {
   ]
   return <div className="signals-page">
     <section className="scanner-card">
-      <div className="scanner-card-head"><div className="scanner-icon"><SlidersHorizontal size={17} /></div><div><h2>Scanner settings</h2><p>Choose the moving average periods and signal window</p></div></div>
+      <div className="scanner-card-head"><div className="scanner-icon"><SlidersHorizontal size={17} /></div><div><h2>Scanner settings</h2></div></div>
       <form onSubmit={generate}>
-        <div className="scanner-fields">{fields.map(field => <label className="scanner-field" key={field.key}><span>{field.label}</span><div className="number-control"><input type="number" min={field.min} max={field.max} value={settings[field.key]} onChange={update(field.key)} required /><span>{field.unit}</span></div></label>)}</div>
+        <div className="scanner-fields">{fields.map(field => <div className="scanner-field" key={field.key}><span>{field.label}</span><NumberField label={field.label} min={field.min} max={field.max} value={settings[field.key]} onChange={update(field.key)} unit={field.unit} required disabled={busy} /></div>)}</div>
         <div className="scanner-actions"><span className="scanner-hint"><span className="live-dot" /> Scans the current Nifty 100 constituents</span><button className="primary-button generate-button" type="submit" disabled={busy}>{busy ? <><LoaderCircle size={16} className="spin" /> Scanning stocks…</> : <><Radio size={16} /> Generate signals</>}</button></div>
       </form>
       {error && <div className="form-error scanner-error" role="alert">{error}</div>}
     </section>
     <div className="signals-results-head"><div><h2>{payload ? 'Crossover signals' : 'Signal results'}</h2><p>{payload ? `Ranked by most recent crossover · ${payload.scanned} stocks scanned` : 'Bullish and bearish crossovers will appear here.'}</p></div>{payload && <div className="result-count"><strong>{payload.results.length}</strong><span>of {payload.total_signals} signals</span></div>}</div>
-    {payload?.results?.length ? <div className="signals-table-wrap"><table className="signals-table"><thead><tr><th>Rank</th><th>Ticker</th><th>Company</th><th>Crossover type</th><th>Crossover date</th><th className="numeric">Close</th><th className="numeric">SMA {payload.short_sma}</th><th className="numeric">SMA {payload.long_sma}</th></tr></thead><tbody>{payload.results.map((row, index) => <tr key={`${row.ticker}-${row.crossover_date}`}><td><span className="rank-pill">{String(index + 1).padStart(2, '0')}</span></td><td><strong className="ticker-cell">{row.ticker}</strong></td><td className="company-cell">{row.company}</td><td><span className={`signal-type ${row.crossover_type.toLowerCase()}`}><span />{row.crossover_type}</span></td><td className="date-cell">{dateLabel(row.crossover_date)}</td><td className="numeric price-cell">₹{money(row.close)}</td><td className="numeric">₹{money(row.short_sma)}</td><td className="numeric">₹{money(row.long_sma)}</td></tr>)}</tbody></table></div> : payload ? <div className="no-signals"><div className="no-signals-icon"><Radio size={20} /></div><strong>No crossovers found</strong><p>No Nifty 100 stock crossed these moving averages in the last {payload.lookback_days} days. Try widening the lookback window.</p></div> : <div className="signals-placeholder"><div className="placeholder-icon"><Radio size={23} /></div><strong>Ready when you are</strong><p>Generate a scan to find the latest bullish and bearish SMA crossovers in the Nifty 100.</p></div>}
+    {payload?.results?.length ? <div className="signals-table-wrap"><table className="signals-table"><thead><tr><th>Rank</th><th>Ticker</th><th>Company</th><th>Crossover type</th><th>Crossover date</th><th className="numeric">Close</th><th className="numeric">SMA {payload.short_sma}</th><th className="numeric">SMA {payload.long_sma}</th></tr></thead><tbody>{payload.results.map((row, index) => <tr key={`${row.ticker}-${row.crossover_date}`}><td><span className="rank-pill">{String(index + 1).padStart(2, '0')}</span></td><td><strong className="ticker-cell">{row.ticker}</strong></td><td className="company-cell">{row.company}</td><td><span className={`signal-type ${row.crossover_type.toLowerCase()}`}><span />{row.crossover_type}</span></td><td className="date-cell">{dateLabel(row.crossover_date)}</td><td className="numeric price-cell">₹{money(row.close)}</td><td className="numeric">₹{money(row.short_sma)}</td><td className="numeric">₹{money(row.long_sma)}</td></tr>)}</tbody></table></div> : payload ? <div className="no-signals"><div className="no-signals-icon"><Radio size={20} /></div><strong>No crossovers found</strong><p>No Nifty 100 stock crossed these moving averages in the last {payload.lookback_days} days. Try widening the lookback window.</p></div> : <div className="signals-placeholder"><div className="placeholder-icon"><Radio size={23} /></div><strong>No scan yet</strong></div>}
     {payload && <div className="scanner-footnote"><span className="live-dot" /> Data as of {dateLabel(payload.as_of)} · Daily candles from Kite Connect · {payload.skipped} unavailable or unmapped</div>}
   </div>
 }
@@ -139,21 +195,25 @@ function SignalsPanel() {
 const ALGO_PARAMS = { volumeLookback: 20, volumeMultiplier: 3, priceLookback: 20, maxBreakoutAge: 20, midpointTolerance: 1 }
 
 function normalizeScannerStock(stock) {
-  const candles = (Array.isArray(stock.candles) ? stock.candles : []).map(candle => {
+  stock = stock && typeof stock === 'object' ? stock : {}
+  const candles = (Array.isArray(stock.candles) ? stock.candles : []).filter(candle => candle && typeof candle === 'object').flatMap(candle => {
     const rawDate = String(candle.date ?? '')
-    const date = /^\d{4}-\d{2}-\d{2}/.test(rawDate) ? rawDate.slice(0, 10) : new Date(rawDate).toISOString().slice(0, 10)
-    return { date, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close), volume: Number(candle.volume) }
-  }).filter(candle => Number.isFinite(Date.parse(candle.date)))
+    const parsedDate = new Date(rawDate)
+    if (!Number.isFinite(parsedDate.getTime())) return []
+    const date = /^\d{4}-\d{2}-\d{2}/.test(rawDate) ? rawDate.slice(0, 10) : parsedDate.toISOString().slice(0, 10)
+    return [{ date, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close), volume: Number(candle.volume) }]
+  })
   candles.sort((a, b) => a.date.localeCompare(b.date))
   return { ...stock, symbol: String(stock.symbol ?? ''), companyName: stock.companyName ?? stock.company_name ?? stock.company ?? stock.symbol ?? '', instrument_token: Number(stock.instrument_token), candles }
 }
 
-function scanBreakoutRetests(rawStocks) {
+export function scanBreakoutRetests(rawStocks) {
+  if (!Array.isArray(rawStocks)) throw new Error('Scanner data response did not include a stocks list.')
   const stocks = rawStocks.map(normalizeScannerStock)
   const results = []
   for (const stock of stocks) {
     const candles = stock.candles
-    if (candles.length < 25) continue
+    if (!stock.symbol || candles.length < 25) continue
     const lastIndex = candles.length - 1
     const earliestEligible = Math.max(ALGO_PARAMS.priceLookback, lastIndex - ALGO_PARAMS.maxBreakoutAge)
     for (let bIndex = lastIndex - 1; bIndex >= earliestEligible; bIndex -= 1) {
@@ -197,10 +257,29 @@ function scanBreakoutRetests(rawStocks) {
     }
   }
   results.sort((a, b) => a.daysSince - b.daysSince || Math.abs(a.distanceFromMidpoint) - Math.abs(b.distanceFromMidpoint))
-  return { stocks, results }
+  return { stocks, results, eligibleCount: stocks.filter(stock => stock.symbol && stock.candles.length >= 25).length }
 }
 
-function AlgoSignalsPanel() {
+// React development mode can mount twice. Share only an in-flight request so a
+// second mount cannot race the backend's single market-data refresh slot.
+let scannerSnapshotRequest = null
+export function loadScannerSnapshot() {
+  if (!scannerSnapshotRequest) {
+    scannerSnapshotRequest = request('/api/scanner-data').then(data => {
+      if (!Array.isArray(data.stocks)) throw new Error('Scanner data response did not include a stocks list.')
+      return data
+    }).finally(() => { scannerSnapshotRequest = null })
+  }
+  return scannerSnapshotRequest
+}
+
+export function AlgoScanFeedback({ busy, error, scanned = 0, elapsed = 0, onRetry }) {
+  if (busy) return <div className="algo-state" role="status" aria-live="polite"><LoaderCircle size={19} className="spin" /><strong>Loading scanner cache...</strong><p>{elapsed >= 10 ? `Still loading market data (${elapsed}s). The first refresh can take a minute or more.` : 'Fetching daily candles and checking breakout and retest rules.'}</p></div>
+  if (error) return <div className="algo-state empty" role="status"><AlertTriangle size={21} /><strong>Scan could not finish.</strong><p>Review the error above, then try again.</p><button className="secondary-button" onClick={onRetry}>Retry scanner</button></div>
+  return <div className="algo-state empty" role="status" aria-live="polite"><div className="placeholder-icon"><ScanLine size={21} /></div><strong>{scanned ? 'No breakout retest setups match the current parameters.' : 'No stocks are available in the scanner cache.'}</strong><p>{scanned ? `${scanned} stocks scanned. No stocks matched the breakout and retest rules.` : 'Try again when market data is available.'}</p></div>
+}
+
+export function AlgoSignalsPanel({ notify, onBusyChange }) {
   const [stocks, setStocks] = useState([])
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(true)
@@ -210,34 +289,49 @@ function AlgoSignalsPanel() {
   const [livePrices, setLivePrices] = useState({})
   const [snapshotPrices, setSnapshotPrices] = useState({})
   const [tickStatus, setTickStatus] = useState('connecting')
+  const [scanInfo, setScanInfo] = useState(null)
+  const [elapsed, setElapsed] = useState(0)
+  const scanVersion = useRef(0)
+  const runningRef = useRef(false)
+  useEffect(() => { onBusyChange?.(running || loading) }, [running, loading, onBusyChange])
 
-  const runScanner = async (source = stocks) => {
+  const runScanner = useCallback(async ({ initial = false } = {}) => {
+    if (runningRef.current && !initial) return
+    runningRef.current = true
+    const version = ++scanVersion.current
     setRunning(true)
+    setError(''); setResults([]); setScanInfo(null); setElapsed(0)
+    setSelected(null); setLivePrices({}); setSnapshotPrices({})
+    setTickStatus('waiting for scan')
     try {
-      const scan = scanBreakoutRetests(source)
-      setStocks(scan.stocks)
-      setResults(scan.results)
-      setSelected(null)
-      setLivePrices({})
-      setSnapshotPrices({})
-      setTickStatus('connecting')
-    } catch (e) { setError(e.message || 'Could not scan the cached candles.') }
-    finally { setRunning(false) }
-  }
-
-  useEffect(() => {
-    let active = true
-    request('/api/scanner-data').then(data => {
-      if (!active) return
-      if (!Array.isArray(data.stocks)) throw new Error('Scanner data response did not include a stocks list.')
+      const data = await loadScannerSnapshot()
+      if (version !== scanVersion.current) return
       const scan = scanBreakoutRetests(data.stocks)
       setStocks(scan.stocks)
       setResults(scan.results)
-      setError('')
-      setLoading(false)
-    }).catch(e => { if (active) { setError(e.message); setLoading(false) } })
-    return () => { active = false }
-  }, [])
+      setScanInfo({ completedAt: new Date().toLocaleTimeString(), eligibleCount: scan.eligibleCount, unavailable: data.metadata?.missingSymbols?.length || 0 })
+      setTickStatus(scan.results.length ? 'connecting' : 'no active setups')
+      if (!initial) notify?.('Algo scan complete', `${scan.stocks.length} stocks scanned; ${scan.results.length} matching setups.`, scan.results.length ? 'success' : 'info')
+    } catch (e) {
+      if (version !== scanVersion.current) return
+      const message = e.message || 'Could not load scanner data. Please retry.'
+      setStocks([]); setError(message); setTickStatus('scan failed')
+      if (!initial) notify?.('Algo scan failed', message, 'error')
+    } finally {
+      if (version === scanVersion.current) { runningRef.current = false; setRunning(false); setLoading(false) }
+    }
+  }, [notify])
+
+  useEffect(() => {
+    runScanner({ initial: true })
+    return () => { scanVersion.current += 1 }
+  }, [runScanner])
+
+  useEffect(() => {
+    if (!running && !loading) return
+    const timer = window.setInterval(() => setElapsed(value => value + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [running, loading])
 
   useEffect(() => {
     if (!results.length) { setTickStatus('no active setups'); return undefined }
@@ -272,19 +366,20 @@ function AlgoSignalsPanel() {
   const signedPercent = value => `${value > 0 ? '+' : ''}${Number(value).toFixed(2)}%`
   const currency = value => `₹${new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)}`
 
-  return <div className="algo-signals-page">
+  return <div className="algo-signals-page" aria-busy={loading || running}>
     <div className="algo-summary">
-      <div className="algo-summary-metric"><span className="summary-icon breakout"><ScanLine size={17} /></span><div><strong>{loading ? '—' : results.length}</strong><small>Triggered breakouts</small></div></div>
+      <div className="algo-summary-metric"><span className="summary-icon breakout"><ScanLine size={17} /></span><div><strong>{loading || running ? '—' : results.length}</strong><small>Triggered breakouts</small></div></div>
       <div className="summary-divider" />
-      <div className="algo-summary-metric"><span className="summary-icon stocks"><BarChart3 size={17} /></span><div><strong>{loading ? '—' : stocks.length}</strong><small>Stocks scanned</small></div></div>
+      <div className="algo-summary-metric"><span className="summary-icon stocks"><BarChart3 size={17} /></span><div><strong>{loading || running ? '—' : stocks.length}</strong><small>Stocks scanned</small></div></div>
       <div className="summary-divider" />
-      <div className="algo-live-status"><span className={`live-dot ${tickStatus === 'connected' ? '' : 'status-soft'}`} /><div><strong>Live tick subscription</strong><small>{loading ? 'waiting for scan' : tickStatus}</small></div></div>
+      <div className="algo-live-status"><span className={`live-dot ${tickStatus === 'connected' ? '' : 'status-soft'}`} /><div><strong>Live tick subscription</strong><small>{loading || running ? 'waiting for scan' : tickStatus}</small></div></div>
       <button className="secondary-button algo-run-button" onClick={() => runScanner()} disabled={loading || running}>{running ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}{running ? 'Scanning…' : 'Run scanner'}</button>
     </div>
     <div className="algo-parameters"><span>VOLUME LOOKBACK <strong>20 candles</strong></span><i /><span>VOLUME TRIGGER <strong>3× average</strong></span><i /><span>BREAKOUT AGE <strong>≤ 20 candles</strong></span><i /><span>MIDPOINT TOLERANCE <strong>±1%</strong></span></div>
     {error && <div className="algo-error" role="alert"><strong>Scanner data error</strong><span>{error}</span></div>}
+    {scanInfo && !loading && !running && !error && <div className="algo-completion" role="status" aria-live="polite"><Check size={15} /><span>Scan complete at {scanInfo.completedAt}: <strong>{results.length} matching setups</strong> across {stocks.length} stocks. {scanInfo.eligibleCount} stocks had at least 25 candles.{scanInfo.unavailable > 0 && ` ${scanInfo.unavailable} symbols were unavailable from the data source.`}</span></div>}
     <section className="breakouts-card"><header className="breakouts-heading"><div><div className="eyebrow page-eyebrow">ALGO SCANNER</div><h2>Triggered Breakouts</h2></div><span className="breakouts-tag"><span className="live-dot" /> RETEST WATCHLIST</span></header>
-      {loading ? <div className="algo-state"><LoaderCircle size={19} className="spin" /><span>Loading scanner cache...</span></div> : results.length === 0 && !error ? <div className="algo-state empty"><div className="placeholder-icon"><ScanLine size={21} /></div><strong>No breakout retest setups match the current parameters.</strong></div> : results.length > 0 ? <div className="breakouts-table-scroll"><table className="breakouts-table"><thead><tr><th>Rank</th><th>Symbol</th><th className="num">Current Price</th><th>Breakout Date</th><th className="num">Age</th><th className="num">Breakout Vol</th><th className="num">Retest Distance</th><th className="num">Peak Gains</th><th className="num">Retracement</th></tr></thead><tbody>{results.map((row, index) => <tr key={`${row.symbol}-${row.breakoutDate}`} className={selected === row.symbol ? 'selected' : ''} onClick={() => setSelected(row.symbol)}><td><span className="algo-rank">{index + 1}</span></td><td><strong className="algo-symbol">{row.symbol}</strong><small className="algo-company">{row.companyName}</small></td><td className="num algo-price">{currency(priceFor(row))}</td><td className="algo-date">{row.breakoutDate}</td><td className="num">{row.daysSince}<span className="age-unit"> candles</span></td><td className="num"><span className="volume-multiple">{row.volMultiple.toFixed(2)}x</span></td><td className={`num ${row.distanceFromMidpoint < 0 ? 'negative-value' : 'positive-value'}`}>{signedPercent(row.distanceFromMidpoint)}</td><td className="num positive-value">{signedPercent(row.returnFromCloseToSubHigh)}</td><td className="num">{signedPercent(row.retracementHigh)}</td></tr>)}</tbody></table></div> : null}
+      {loading || running || error || results.length === 0 ? <AlgoScanFeedback busy={loading || running} error={error} scanned={stocks.length} elapsed={elapsed} onRetry={() => runScanner()} /> : <div className="breakouts-table-scroll"><table className="breakouts-table"><thead><tr><th>Rank</th><th>Symbol</th><th className="num">Current Price</th><th>Breakout Date</th><th className="num">Age</th><th className="num">Breakout Vol</th><th className="num">Retest Distance</th><th className="num">Peak Gains</th><th className="num">Retracement</th></tr></thead><tbody>{results.map((row, index) => <tr key={`${row.symbol}-${row.breakoutDate}`} className={selected === row.symbol ? 'selected' : ''} onClick={() => setSelected(row.symbol)}><td><span className="algo-rank">{index + 1}</span></td><td><strong className="algo-symbol">{row.symbol}</strong><small className="algo-company">{row.companyName}</small></td><td className="num algo-price">{currency(priceFor(row))}</td><td className="algo-date">{row.breakoutDate}</td><td className="num">{row.daysSince}<span className="age-unit"> candles</span></td><td className="num"><span className="volume-multiple">{row.volMultiple.toFixed(2)}x</span></td><td className={`num ${row.distanceFromMidpoint < 0 ? 'negative-value' : 'positive-value'}`}>{signedPercent(row.distanceFromMidpoint)}</td><td className="num positive-value">{signedPercent(row.returnFromCloseToSubHigh)}</td><td className="num">{signedPercent(row.retracementHigh)}</td></tr>)}</tbody></table></div>}
     </section>
   </div>
 }
@@ -321,7 +416,7 @@ export default function App() {
     finally { setBusy(false) }
   }
   const logout = async () => {
-    try { await request('/api/auth/logout', { method: 'POST' }) } catch { /* keep the UI recoverable if the API is offline */ }
+    await request('/api/auth/logout', { method: 'POST' })
     setAuthenticated(false)
   }
   if (checking) return <div className="boot-screen"><Brand /><LoaderCircle size={20} className="spin" /></div>

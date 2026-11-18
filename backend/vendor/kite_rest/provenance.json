@@ -1,0 +1,27 @@
+{
+  "distribution": "kiteconnect",
+  "version": "5.2.2",
+  "normalization": "UTF-8, LF, one terminal newline",
+  "files": [
+    {
+      "file": "connect.py",
+      "upstream_sha256": "da22b9f52f7da3a59a9814d25a9748ac9266ade9b15f3f61178f499d960028dc",
+      "vendored_sha256": "0b79b6d085f76bb80a545563ff92efcc371b0f19c145cce8a6af59ba185042c2"
+    },
+    {
+      "file": "exceptions.py",
+      "upstream_sha256": "95028b5e9bad5b07ac87b8f4e5e3b6a36a7c4a001b220d26353748b694840cff",
+      "vendored_sha256": "95028b5e9bad5b07ac87b8f4e5e3b6a36a7c4a001b220d26353748b694840cff"
+    },
+    {
+      "file": "__version__.py",
+      "upstream_sha256": "36139c7f64e20aaded7825e20e08e27ef46aacab449bca434d2e6273330e8a70",
+      "vendored_sha256": "36139c7f64e20aaded7825e20e08e27ef46aacab449bca434d2e6273330e8a70"
+    },
+    {
+      "file": "LICENSE",
+      "upstream_sha256": "00e1c8c08ed00ae7bb3c24c948d46cc5dc3da9b4cf90a09ba741cdd3eaa7d0de",
+      "vendored_sha256": "00e1c8c08ed00ae7bb3c24c948d46cc5dc3da9b4cf90a09ba741cdd3eaa7d0de"
+    }
+  ]
+}

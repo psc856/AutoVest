@@ -1,0 +1,78 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: [.env.production]
+    environment:
+      APP_ENV: production
+      AUTO_TRADE_MODE: ${AUTO_TRADE_MODE:?Set AUTO_TRADE_MODE in .env.production}
+    command: [python, -m, uvicorn, 'backend.main:app', --host, 0.0.0.0, --port, '8000', --proxy-headers, '--forwarded-allow-ips=*', --limit-concurrency, '64', --timeout-keep-alive, '5']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ['/tmp:size=64m,mode=1777']
+    mem_limit: 768m
+    pids_limit: 128
+    stop_grace_period: 90s
+    expose: ['8000']
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready',timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  trade-worker:
+    build: .
+    command: [python, -m, backend.trade_worker]
+    restart: unless-stopped
+    env_file: [.env.production]
+    environment:
+      APP_ENV: production
+      AUTO_TRADE_MODE: ${AUTO_TRADE_MODE:?Set AUTO_TRADE_MODE in .env.production}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ['/tmp:size=32m,mode=1777']
+    mem_limit: 512m
+    pids_limit: 64
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+    healthcheck:
+      test: [CMD, python, -m, backend.preflight, --worker-health]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 90s
+
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env.production}
+    ports: ['80:80', '443:443', '443:443/udp']
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs: ['/tmp:size=32m,mode=1777']
+    mem_limit: 256m
+    pids_limit: 64
+    depends_on:
+      api:
+        condition: service_started
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+
+volumes:
+  caddy_data:
+  caddy_config:

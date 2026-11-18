@@ -2,7 +2,14 @@
 .env
 .env.*
 !.env.example
+!.env.oracle.example
+!.env.production.example
 .token_store.json
+.token_store.key
+.token_store.json.*
+.strategy_store.json.*
+.strategy_store.json
+.env.oracle
 
 # Python
 .venv/
@@ -13,6 +20,8 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+tests/.test-*/
+.test-artifacts/
 
 # Node / Vite
 node_modules/

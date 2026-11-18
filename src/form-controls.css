@@ -1,0 +1,49 @@
+input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { appearance: none; -webkit-appearance: none; margin: 0; }
+.modern-number { display: flex; gap: 9px; align-items: center; min-width: 0; height: 45px; padding: 0 9px 0 13px; border: 1px solid var(--glass-border); border-radius: 10px; background: rgb(5 10 17 / 42%); box-shadow: inset 0 1px 3px rgb(0 0 0 / 10%); transition: border-color .16s, box-shadow .16s; }
+.modern-number:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgb(95 204 152 / 10%); }
+.modern-number input { flex: 1; width: 1px; min-width: 0; height: 100%; padding: 0; background: transparent; border: 0; outline: none; color: var(--text); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.modern-number input:focus-visible { outline: none; }
+.modern-number-prefix, .modern-number-unit { flex-shrink: 0; color: var(--muted); font-size: 10px; }
+.modern-number-prefix { font-size: 12px; }
+.modern-stepper { display: flex; flex-shrink: 0; align-items: center; height: 26px; border: 1px solid var(--glass-border); border-radius: 7px; background: var(--subtle); }
+.modern-stepper button { display: grid; place-items: center; width: 25px; height: 25px; border: 0; background: transparent; color: var(--soft); cursor: pointer; border-radius: 6px; transition: background .15s, color .15s; }
+.modern-stepper button:hover:not(:disabled) { color: var(--accent); background: rgb(95 204 152 / 13%); }
+.modern-stepper button:disabled { opacity: .25; }
+.modern-stepper > span { height: 12px; width: 1px; background: var(--glass-border); }
+.modern-number.is-disabled { opacity: .55; }
+.modern-select { position: relative; min-width: 0; }
+.modern-select-trigger { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 13px; height: 45px; color: var(--text); border: 1px solid var(--glass-border); border-radius: 10px; background: rgb(5 10 17 / 42%); font-size: 12px; text-align: left; cursor: pointer; transition: border-color .16s, box-shadow .16s; }
+.modern-select-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modern-select-trigger.is-placeholder { color: var(--muted); }
+.modern-select-trigger svg { flex-shrink: 0; color: var(--muted); transition: transform .15s; }
+.modern-select.is-open .modern-select-trigger { border-color: var(--accent); box-shadow: 0 0 0 3px rgb(95 204 152 / 10%); }
+.modern-select.is-open .modern-select-trigger svg { transform: rotate(180deg); }
+.modern-select-menu { position: absolute; left: 0; right: 0; top: calc(100% + 7px); z-index: 30; padding: 5px; max-height: 270px; overflow: auto; border: 1px solid var(--glass-border); border-radius: 12px; background: #151d27f7; backdrop-filter: blur(24px); box-shadow: 0 16px 40px rgb(0 0 0 / 32%); }
+.modern-select-menu.opens-above { top: auto; bottom: calc(100% + 7px); }
+.modern-select-option { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 11px 10px; border-radius: 7px; color: var(--soft); font-size: 12px; cursor: pointer; }
+.modern-select-option > span { min-width: 0; overflow-wrap: anywhere; }
+.modern-select-option small { display: block; color: var(--muted); font-size: 10px; margin-top: 4px; }
+.modern-select-option.is-focused { background: var(--subtle); color: var(--text); }
+.modern-select-option.is-selected { background: rgb(95 204 152 / 12%); color: var(--positive); }
+.modern-select-option svg { flex-shrink: 0; }
+.modern-select-empty { padding: 16px 10px; color: var(--muted); text-align: center; font-size: 12px; }
+.dashboard-panel { min-width: 0; }
+.dashboard-panel[hidden] { display: none !important; }
+.nav-job-spinner { margin-left: auto; color: var(--accent); }
+.workspace-job { display: flex; align-items: center; gap: 7px; border: 1px solid var(--glass-border); border-radius: 20px; background: var(--subtle); color: var(--accent); padding: 6px 10px; cursor: pointer; font-size: 10px; }
+.background-jobs { display: flex; gap: 8px; flex-wrap: wrap; margin: -5px 0 16px; }
+.execution-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 2px 0 0; }
+.execution-source { display: flex; gap: 7px; align-items: center; color: var(--muted); font-size: 11px; }
+.execution-source svg { color: var(--accent); }
+.execution-mode { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; font-size: 10px; color: var(--soft); border: 1px solid var(--glass-border); border-radius: 6px; background: var(--subtle); }
+.execution-mode.live { color: var(--positive); border-color: rgb(95 204 152 / 30%); }
+.strategy-select { position: relative; z-index: 4; }
+.trade-config { overflow: visible; }
+.trade-action-row .primary-button, .trade-action-row .secondary-button { font-size: 12px; }
+.preview-status { color: var(--muted); font-size: 10px; display: flex; gap: 6px; align-items: center; }
+.preview-status svg { color: var(--accent); }
+.trade-field input[type="checkbox"] { accent-color: var(--accent); width: 17px; height: 17px; }
+html[data-theme="light"] .modern-number, html[data-theme="light"] .modern-select-trigger { background: rgb(255 255 255 / 70%); box-shadow: inset 0 1px 2px rgb(42 70 94 / 3%); }
+html[data-theme="light"] .modern-select-menu { background: #fffffff5; box-shadow: 0 16px 40px rgb(42 70 94 / 13%); }
+@media (max-width: 450px) { .modern-number { gap: 5px; padding-left: 10px; } .modern-number-unit { font-size: 9px; } .modern-stepper button { width: 22px; } .workspace-job { padding: 5px 7px; } }
