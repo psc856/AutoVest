@@ -10,7 +10,6 @@ __pycache__
 *.py[cod]
 .env
 .env.*
-!.env.oracle.example
 .token_store.json
 .token_store.key
 .token_store.json.*

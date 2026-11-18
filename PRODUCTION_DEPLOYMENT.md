@@ -1,80 +1,93 @@
-# Deploy AutoInvest from GitHub to AWS Lightsail
+# Deploy AutoVest from GitHub to AWS EC2
 
-This deployment runs the React frontend, FastAPI API, persistent order worker, and Caddy HTTPS proxy on one AWS Lightsail instance. The browser uses one origin, such as `https://invest.example.com`; Caddy serves React and routes `/api`, `/ws`, `/documentation`, `/redoc`, and `/openapi.json` to FastAPI.
+This deployment runs the React frontend, FastAPI API, order worker, and Caddy HTTPS proxy on one EC2 instance. Caddy serves the frontend and routes `/api`, `/ws`, `/documentation`, `/redoc`, and `/openapi.json` to FastAPI through the private Docker network.
 
-Upstash remains the encrypted persistent store. Keeping order state outside the VM allows the API and worker to recover after an instance restart. The production profile never silently switches a failed live deployment to simulation.
+Upstash remains the encrypted persistent store, so sessions, strategies, notifications, and managed-order records survive an EC2 stop/start cycle. Stopping EC2 stops the website, API, worker, reconciliation, expiry handling, and notifications. AutoVest does not prevent a manual EC2 shutdown: inspect Kite and take responsibility for every remaining order and position before stopping the instance.
 
-## 1. Create a separate GitHub repository
+## 1. Confirm the GitHub repository
 
-In GitHub, create a new **private** repository. Leave it empty: do not add a README, license, or `.gitignore` from GitHub.
+The deployment source is:
 
-Before committing locally, confirm that secret files are ignored:
+```text
+https://github.com/psc856/AutoVest
+```
+
+Before every push, verify that real runtime secrets remain ignored:
 
 ```powershell
-git check-ignore -v --no-index .env .env.production .token_store.json .token_store.key
+git check-ignore -v --no-index .env .env.production .token_store.json .token_store.key .strategy_store.json
 git status --short
 ```
 
-The output must not show a real `.env`, token store, encryption key, or credentials as staged files. The example environment files contain placeholders and are safe to commit.
+Only `.env.production.example` should be committed. Never commit `.env.production`, API credentials, Upstash tokens, the Fernet key, session files, or uploaded strategy storage.
 
-If Git asks for an author identity, configure it for this repository only:
-
-```powershell
-git config user.name "Your Name"
-git config user.email "your-github-email@example.com"
-```
-
-Commit the current project:
+Push a reviewed local change with:
 
 ```powershell
 git add .
+git diff --cached --check
 git diff --cached --name-only
-git commit -m "Prepare AutoInvest for AWS deployment"
-git branch -M main
+git commit -m "Describe the change"
+git push origin main
 ```
 
-Preserve the current GitHub remote under another name, then add the new repository as `origin`. Replace the URL with the new repository URL:
+## 2. Launch the EC2 instance
 
-```powershell
-git remote rename origin previous-origin
-git remote add origin https://github.com/YOUR_GITHUB_USER/YOUR_NEW_REPOSITORY.git
-git remote -v
-git push -u origin main
-```
+Open the [EC2 console](https://console.aws.amazon.com/ec2/) and select the Mumbai region (`ap-south-1`), or the AWS region you intend to register with Zerodha.
 
-If `origin` does not exist, omit the `git remote rename` command. Do not force-push or upload `.env.production`.
+Select **Launch instance** and use:
 
-## 2. Create the Lightsail instance
+| Setting | Value |
+| --- | --- |
+| Name | `autovest-production` |
+| AMI | Ubuntu Server 24.04 LTS, **64-bit Arm** |
+| Instance type | `t4g.small` (2 vCPU, 2 GiB RAM) |
+| Purchase option | On-Demand; do not use Spot |
+| Key pair | Create and securely download a `.pem` key |
+| Root volume | 30 GiB `gp3`, encrypted |
+| Metadata | IMDSv2 required |
 
-In the [AWS Lightsail console](https://lightsail.aws.amazon.com/):
+Create or select a security group with only these inbound rules:
 
-1. Select **Create instance**.
-2. Choose a nearby region, such as Mumbai for an India-based account.
-3. Choose **Linux/Unix**, **OS only**, and **Ubuntu 24.04 LTS**.
-4. Select at least the 2 GB Linux bundle. The 1 GB bundle is too tight for Docker, API, worker, Caddy, and deployment builds.
-5. Name it `autoinvest-production` and create it.
-6. Open **Networking**, create a static IP, and attach it to the instance.
-7. Keep HTTP `80` and HTTPS `443` open to the internet. Restrict SSH `22` to your current public IP.
+| Port | Source | Purpose |
+| --- | --- | --- |
+| TCP 22 | My IP | SSH administration |
+| TCP 80 | `0.0.0.0/0` | HTTPS certificate issuance and redirect |
+| TCP 443 | `0.0.0.0/0` | AutoVest HTTPS |
 
-The FastAPI port `8000` must not be exposed publicly. Caddy is the only public entry point.
+Add IPv6 HTTP/HTTPS rules only if the instance and DNS are intentionally configured for IPv6. Do not expose FastAPI port `8000`.
 
-Create an AWS billing budget slightly above the expected monthly bundle price so AWS emails you about unexpected charges.
+Launch the instance and wait until both EC2 status checks pass.
 
-## 3. Configure DNS and Zerodha
+Stopping the instance ends EC2 compute billing, but the encrypted EBS volume and Elastic IPv4 address remain billable. For short manual trading sessions these fixed resources usually dominate the monthly cost; for 24/7 operation, compare the current EC2 total with the fixed-price 2 GiB Lightsail bundle before deciding.
 
-Use a domain you control and create an `A` record:
+## 3. Attach a stable Elastic IP
+
+In **EC2 -> Network & Security -> Elastic IP addresses**:
+
+1. Select **Allocate Elastic IP address**.
+2. Select the new address and choose **Associate Elastic IP address**.
+3. Associate it with the `autovest-production` instance and its primary private IP.
+
+Keep this Elastic IP associated when the instance is stopped. It preserves DNS and Zerodha registration, although AWS continues charging for the public IPv4 address while stopped.
+
+Create a DNS `A` record with your domain provider:
 
 ```text
-invest.example.com  ->  LIGHTSAIL_STATIC_IPV4
+invest.example.com  ->  EC2_ELASTIC_IPV4
 ```
 
-Wait until the record resolves to the static IP. Caddy obtains and renews the HTTPS certificate automatically after ports 80 and 443 are reachable.
+Wait until the hostname resolves to the Elastic IP. Register the same public IP in the Zerodha developer console. GTT management has different IP rules from regular orders, but AutoVest can cancel the unfilled remainder of a partial regular order, so the registered egress IP is required for the complete workflow.
 
-Register the same static public IP in the Zerodha developer console. GTT management has different IP requirements from regular order APIs, but this worker can cancel the unfilled remainder of a partial regular order, so the registered egress IP is required for the complete workflow.
+## 4. Connect to Ubuntu and install Docker
 
-## 4. Install Docker and Git
+You can use **EC2 -> Instances -> Connect -> EC2 Instance Connect**, or connect from PowerShell with the downloaded key:
 
-Select **Connect using SSH** in Lightsail and run:
+```powershell
+ssh -i "C:\path\to\autovest.pem" ubuntu@EC2_ELASTIC_IPV4
+```
+
+On Ubuntu, install Docker, Compose, and Git:
 
 ```bash
 sudo apt-get update
@@ -83,51 +96,52 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"
 ```
 
-Disconnect and reconnect once, then verify:
+Disconnect and reconnect once so the Docker group membership applies, then verify:
 
 ```bash
 docker version
 docker compose version
 ```
 
-If the Ubuntu image does not provide `docker-compose-v2`, install Docker Engine and the Compose plugin using Docker's official Ubuntu installation guide.
+If `docker-compose-v2` is unavailable in the selected Ubuntu image, use Docker's official Ubuntu installation instructions to install Docker Engine and the Compose plugin.
 
-## 5. Give the server read-only GitHub access
+## 5. Give EC2 read-only access to GitHub
 
-Generate a dedicated deploy key on the Lightsail instance:
+Generate a repository-specific deploy key on EC2:
 
 ```bash
-ssh-keygen -t ed25519 -C "autoinvest-lightsail" -f "$HOME/.ssh/autoinvest_deploy" -N ""
-cat "$HOME/.ssh/autoinvest_deploy.pub"
+ssh-keygen -t ed25519 -C "autovest-ec2" -f "$HOME/.ssh/autovest_deploy" -N ""
+cat "$HOME/.ssh/autovest_deploy.pub"
 ```
 
-In the new GitHub repository, open **Settings -> Deploy keys -> Add deploy key**. Paste the public key and leave **Allow write access** disabled.
+In GitHub, open **AutoVest -> Settings -> Deploy keys -> Add deploy key**. Paste the public key and leave **Allow write access** disabled.
 
-Clone the repository, replacing the GitHub values:
+Clone the repository:
 
 ```bash
-GIT_SSH_COMMAND="ssh -i $HOME/.ssh/autoinvest_deploy -o IdentitiesOnly=yes" git clone git@github.com:YOUR_GITHUB_USER/YOUR_NEW_REPOSITORY.git AutoInvest
-cd AutoInvest
-git config core.sshCommand "ssh -i $HOME/.ssh/autoinvest_deploy -o IdentitiesOnly=yes"
+GIT_SSH_COMMAND="ssh -i $HOME/.ssh/autovest_deploy -o IdentitiesOnly=yes" git clone git@github.com:psc856/AutoVest.git AutoVest
+cd AutoVest
+git config core.sshCommand "ssh -i $HOME/.ssh/autovest_deploy -o IdentitiesOnly=yes"
 ```
 
-Accept GitHub's host fingerprint only after confirming it matches GitHub's published SSH fingerprints.
+Accept GitHub's host key only after confirming it against GitHub's published SSH fingerprints.
 
-## 6. Create the production environment
+## 6. Create the private production environment
 
-Create a private environment file on Lightsail:
+On EC2:
 
 ```bash
+cd "$HOME/AutoVest"
 cp -n .env.production.example .env.production
 chmod 600 .env.production
 nano .env.production
 ```
 
-Set the real values:
+Use your actual hostname and secret values:
 
 ```env
 APP_ENV=production
-DEPLOYMENT_ID=autoinvest-production
+DEPLOYMENT_ID=autovest-production
 
 APP_DOMAIN=invest.example.com
 FRONTEND_ORIGIN=https://invest.example.com
@@ -145,25 +159,25 @@ TRADE_MAX_POSITIONS=5
 TRADE_MAX_ACCOUNT_EXPOSURE=100000
 ```
 
-`APP_DOMAIN` contains only the hostname. `FRONTEND_ORIGIN` contains the full HTTPS origin with no trailing slash. Reuse the existing stable encryption key if the Upstash database already contains sessions or strategies encrypted by this application.
+`APP_DOMAIN` is the hostname only. `FRONTEND_ORIGIN` is the exact HTTPS origin without a trailing slash. Reuse the existing Fernet key if the selected Upstash database already contains records encrypted by this application.
 
-Store a protected backup of the encryption key and Upstash credentials. Losing the encryption key makes the encrypted records unreadable.
+Keep a protected offline backup of the Fernet key and Upstash credentials. Do not place them in GitHub, EC2 user data, an AMI name, tags, or shell history shared with other users.
 
-## 7. Start without order execution
+## 7. Build and test with order execution disabled
 
-Build both production images:
+Build the backend and frontend images:
 
 ```bash
 docker compose --env-file .env.production -f compose.production.yaml build --pull
 ```
 
-Check configuration and persistent storage without placing or cancelling broker orders:
+Verify configuration and persistent Redis storage. This command does not contact Kite to submit or cancel an order:
 
 ```bash
 docker compose --env-file .env.production -f compose.production.yaml run --rm --no-deps api python -m backend.preflight
 ```
 
-Start only the web application while live execution is disabled:
+Start the API and frontend without the order worker:
 
 ```bash
 docker compose --env-file .env.production -f compose.production.yaml up -d api caddy
@@ -178,29 +192,29 @@ https://invest.example.com/documentation
 https://invest.example.com/api/health
 ```
 
-Log in with a fresh Kite request token. Verify Profile, Funds, Signals, Algo Signals, strategy upload, and scan results. Auto Trade should report that execution is unavailable while the server mode is disabled.
+Log in using a fresh Kite request token. Verify Profile, Funds, Signals, Algo Signals, strategy upload, and scan results. Auto Trade should show that execution is unavailable while `AUTO_TRADE_MODE=disabled`.
 
-If HTTPS does not become available, check that DNS points to the attached static IP and Lightsail permits inbound TCP 80 and 443:
+If HTTPS is unavailable, verify DNS and security-group ports 80/443, then inspect Caddy:
 
 ```bash
 docker compose --env-file .env.production -f compose.production.yaml logs --tail=100 caddy
 ```
 
-## 8. Enable the persistent live worker
+## 8. Enable live execution
 
-After the read-only and scanner checks pass, edit `.env.production`:
+Edit `.env.production`:
 
 ```env
 AUTO_TRADE_MODE=live
 ```
 
-Run the live configuration and Redis preflight. It does not place or cancel broker orders:
+Run the live configuration and storage preflight. It does not place or cancel orders:
 
 ```bash
 docker compose --env-file .env.production -f compose.production.yaml run --rm --no-deps api python -m backend.preflight --live
 ```
 
-Start the API and worker with the live configuration:
+Start all services with the updated environment:
 
 ```bash
 docker compose --env-file .env.production -f compose.production.yaml up -d --force-recreate api trade-worker caddy
@@ -208,17 +222,52 @@ docker compose --env-file .env.production -f compose.production.yaml exec api py
 docker compose --env-file .env.production -f compose.production.yaml ps
 ```
 
-The readiness endpoint should return HTTP 200 with live orders enabled:
+Verify:
 
 ```text
 https://invest.example.com/api/health/ready
 ```
 
-The UI should show **Live orders**. A scan and final confirmation are still required before any entry is submitted. Start with one stock and small server-side limits. Confirm the resulting GTT, order status, holding, and protective OCO directly in Kite.
+The UI should show **Live orders**. A strategy scan and final browser confirmation remain mandatory before AutoVest submits an entry GTT.
 
-## 9. Monitor and update
+## 9. Use EC2 for a short trading session
 
-View bounded service logs:
+EC2 continues running until you stop it. It does not automatically stop after 30 minutes.
+
+For a short session:
+
+1. In EC2, select `autovest-production` and choose **Instance state -> Start instance**.
+2. Wait for both status checks to pass and allow Docker a short time to start the containers.
+3. Open `https://invest.example.com` and confirm `/api/health/ready` is healthy.
+4. Log in to Kite for the current trading day if the access token has expired.
+5. Scan, review, and confirm the intended trade.
+6. Keep EC2 running for the period in which you want AutoVest to monitor the setup.
+7. Before stopping, inspect Kite orders, GTTs, holdings, positions, and AutoVest Activity.
+8. Manually cancel, protect, close, or take responsibility for everything that will remain after shutdown.
+9. In EC2, choose **Instance state -> Stop instance** and confirm. Do not select **Terminate**.
+
+Use the normal EC2 stop action rather than **Force stop**. AWS asks the operating system to shut down, allowing Docker's stop grace periods to signal the worker and API.
+
+When EC2 is stopped:
+
+- The website, API, scanner, WebSocket, worker, reconciliation, notifications, and application-managed GTT expiry are offline.
+- Kite-hosted orders and GTTs are not cancelled merely because EC2 stopped.
+- Any fill, rejection, unfilled protective limit, or manual Kite change is your responsibility until EC2 and the worker run again.
+- EC2 compute billing stops, but EBS storage and the Elastic IPv4 address continue to incur charges.
+
+When EC2 starts again, the enabled Docker service and `restart: unless-stopped` policies should restart the existing containers. If the site does not return after the EC2 status checks pass, connect through SSH and run:
+
+```bash
+cd "$HOME/AutoVest"
+docker compose --env-file .env.production -f compose.production.yaml up -d
+docker compose --env-file .env.production -f compose.production.yaml ps
+```
+
+The worker will read persistent records from Upstash and attempt reconciliation. If you manually changed or closed orders while EC2 was offline, inspect Activity and use **Recheck with Kite** only after reviewing the broker state.
+
+## 10. Monitor and update from GitHub
+
+View recent logs:
 
 ```bash
 docker compose --env-file .env.production -f compose.production.yaml logs --tail=200 api trade-worker caddy
@@ -230,28 +279,28 @@ Follow logs temporarily:
 docker compose --env-file .env.production -f compose.production.yaml logs -f api trade-worker
 ```
 
-Stop following with `Ctrl+C`; this does not stop the containers.
+`Ctrl+C` stops following logs; it does not stop the containers.
 
-Before deploying an update, check the Activity page and Kite. Do not restart the worker during an uncertain submission or while a setup requires manual review. Then deploy the committed GitHub version:
+Deploy a tested GitHub update when no broker operation has an uncertain outcome:
 
 ```bash
-cd "$HOME/AutoInvest"
+cd "$HOME/AutoVest"
 git pull --ff-only origin main
 docker compose --env-file .env.production -f compose.production.yaml build --pull
 docker compose --env-file .env.production -f compose.production.yaml up -d
 docker compose --env-file .env.production -f compose.production.yaml exec api python -m backend.preflight --live --check-worker
 ```
 
-Automatic restarts are enabled. Caddy certificate data remains in Docker volumes, and order/session state remains in Upstash.
+Do not rebuild or restart during an uncertain submission, partial fill, missing protection, or pending exit.
 
-## Execution and recovery limits
+## Execution limits
 
-- New live entries require a fresh preview, recent traded price, healthy matching worker, server risk policy, available cash, position capacity, and explicit browser confirmation.
-- The duplicate reservation and durable order intent are committed before the Kite request. Uncertain responses are reconciled without blind resubmission.
-- Entry GTTs expire in the application after 30 minutes or at 15:15 India time. Cancellation requires the worker to be online.
-- A confirmed fill is followed by a separate protective OCO GTT operation. Network failure, token expiry, price gaps, limit orders that do not fill, or a stopped worker can leave exposure.
-- Repeated or ambiguous broker responses stop after a bounded retry budget and require manual review. A broker object that differs from the saved symbol, side, quantity, trigger, or limit price also stops automation.
-- Use **Activity -> Recheck with Kite** only after inspecting Kite. Recheck reads and reconciles broker state; it does not guess or blindly resubmit an order.
+- New live entries require a fresh preview, recent traded price, a matching healthy worker, server risk policy, available cash, position capacity, and explicit confirmation.
+- AutoVest commits the duplicate reservation and durable intent before contacting Kite. Unknown responses are reconciled without blind resubmission.
+- Application expiry of an entry GTT requires the worker to remain online until cancellation is confirmed.
+- A confirmed entry fill and its protective OCO placement are separate broker operations.
+- Price gaps and unfilled limit orders can exceed the configured estimated risk.
+- Repeated ambiguity or a broker object that differs from the saved intent stops automation for manual review.
 - Upstash history is operational history, not a statutory accounting or tax ledger.
 
-Run the repository tests and dependency checks before pushing a release. GitHub Actions repeats the backend, frontend, Redis Lua, dependency, and Docker image checks. Tests mock broker writes and never place real orders.
+GitHub Actions runs backend tests, frontend regressions, Redis Lua integration tests, dependency audits, and both production Docker builds. Tests mock broker writes and never place real orders.

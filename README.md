@@ -4,7 +4,7 @@ A glass-style React dashboard with switchable dark and light themes and a FastAP
 
 The Signals tab loads the current Nifty 100 members from the [official NSE Indices constituent CSV](https://www.niftyindices.com/IndexConstituent/ind_nifty100list.csv), maps each symbol to Kite's NSE instrument list, and scans daily candles for bullish and bearish crossovers. It uses closed daily candles and ranks the newest crossovers first. A full scan checks the whole current index and can take around 35 seconds due to Kite historical-data request pacing; **Max stocks** controls how many matching signals are shown.
 
-The Strategies tab accepts account-scoped `.py` strategy files in a restricted format. Auto Trade starts in **paper mode**, previews signal matches, estimates position sizes from editable risk caps, and requires a second explicit confirmation. Live GTT entry orders are available only when the persistent trade worker is online and the backend is explicitly configured for live mode. See [AUTO_TRADING_DEPLOYMENT.md](AUTO_TRADING_DEPLOYMENT.md) before using it.
+The Strategies tab accepts account-scoped `.py` strategy files in a restricted format. Auto Trade starts in **paper mode**, previews signal matches, estimates position sizes from editable risk caps, and requires a second explicit confirmation. Live GTT entry orders are available only when the persistent trade worker is online and the backend is explicitly configured for live mode. See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) before using it.
 
 ## Requirements
 
@@ -68,7 +68,7 @@ Kite request tokens expire within minutes, so paste and submit one soon after ge
 - `GET /api/auto-trade/status` and `/api/auto-trade/events` — worker status and account-scoped order notifications.
 - `POST /api/auto-trade/execute` — simulate in paper mode or submit explicitly confirmed entry GTTs in live mode.
 
-The production Docker deployment compiles and serves React, runs FastAPI and the persistent trade monitor, and exposes them through one Caddy-managed HTTPS origin on AWS Lightsail.
+The production Docker deployment compiles and serves React, runs FastAPI and the persistent trade monitor, and exposes them through one Caddy-managed HTTPS origin on an AWS EC2 instance. EC2 may be stopped manually after the operator has taken responsibility for every remaining Kite order and position.
 
 
 ## Security and account operations
