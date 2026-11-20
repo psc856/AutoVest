@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import path from 'node:path'
 
-const base = 'http://127.0.0.1:5175'
+const base = process.env.AUTOVEST_SMOKE_URL || 'http://127.0.0.1:5175'
 const artifacts = path.resolve('.test-artifacts')
 mkdirSync(artifacts, { recursive: true })
 const executable = ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(existsSync)
@@ -69,7 +69,11 @@ try {
       else if (pathname === '/api/user/profile') response = { user_id: 'DEMO', user_name: 'Preview Account', products: ['CNC'], exchanges: ['NSE'] }
       else if (pathname === '/api/account/summary') response = { available_cash: 25000, day_pnl: 0, open_positions: 0, holding_count: 0, warnings: [], monitors: [], as_of: new Date().toISOString(), status: { mode: 'paper', worker_online: false, persistent: false } }
       else if (pathname === '/api/auto-trade/status') response = { mode: 'paper', worker_online: false, persistent: false }
-      else if (pathname === '/api/auto-trade/events' || pathname === '/api/auto-trade/activity') response = { events: [], monitors: [] }
+      else if (pathname === '/api/auto-trade/events' || pathname === '/api/auto-trade/activity') response = {
+        events: [{ id: 'broker-test-alert', title: 'Worker ready', message: 'Execution service connected.', level: 'info', at: '2026-11-20T09:00:00+05:30' }],
+        monitors: [],
+      }
+      else if (pathname === '/api/opening-stop') response = { available: true, job: null, rows: [] }
       else if (pathname === '/api/scanner-data') {
         scannerRequests += 1
         if (scannerRequests > 1) { pendingAlgo = requestId; return }
@@ -93,6 +97,29 @@ try {
   await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/*', requestStage: 'Request' }] })
   await send('Page.navigate', { url: base })
   await waitFor(async () => (await visibleText()).includes('Available cash'), 'dashboard load')
+
+  await waitFor(async () => await evaluate("document.querySelector('.sidebar-alert')?.textContent.includes('1 unread')"), 'unread sidebar count')
+  await evaluate("document.querySelector('.sidebar-alert').click()")
+  await waitFor(async () => await evaluate("document.querySelector('.notification-inbox')?.textContent.includes('Worker ready')"), 'notification inbox')
+  await evaluate("document.querySelector('.inbox-read-one').click()")
+  await waitFor(async () => await evaluate("document.querySelector('.sidebar-alert')?.textContent.includes('Notifications')"), 'read status synchronized')
+  await evaluate("document.querySelector('.inbox-unread-one').click()")
+  await waitFor(async () => await evaluate("document.querySelector('.sidebar-alert')?.textContent.includes('1 unread')"), 'mark unread synchronized')
+  await evaluate("document.querySelector('.inbox-mark').click()")
+  await evaluate("Array.from(document.querySelectorAll('.inbox-filters button')).find(button => button.firstChild.textContent === 'Unread').click()")
+  assert.ok(await evaluate("document.querySelector('.notification-inbox').textContent.includes('No unread notifications')"))
+  await send('Emulation.setDeviceMetricsOverride', { width: 375, height: 800, deviceScaleFactor: 1, mobile: false })
+  await waitFor(async () => await evaluate('innerWidth === 375'), 'mobile viewport')
+  const bounds = await evaluate("(() => { const rect = document.querySelector('.notification-inbox').getBoundingClientRect(); return { left: rect.left, right: rect.right, viewport: innerWidth } })()")
+  assert.ok(bounds.left >= 0 && bounds.right <= bounds.viewport, JSON.stringify(bounds))
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await waitFor(async () => await evaluate("!document.querySelector('.notification-inbox') && document.activeElement.classList.contains('inbox-trigger')"), 'inbox closes with Escape and restores focus')
+  await send('Emulation.clearDeviceMetricsOverride')
+  await send('Page.reload')
+  await waitFor(async () => await evaluate("document.querySelector('.sidebar-alert')?.textContent.includes('Worker ready')"), 'notification restored after reload')
+  assert.ok(await evaluate("!document.querySelector('.inbox-count')"))
+  await navigate('Opening Stop Loss')
+  await waitFor(async () => (await visibleText()).includes('No filled intraday longs'), 'opening stop empty state')
 
   await navigate('Auto Trade')
   await waitFor(async () => await evaluate("document.querySelector('[role=combobox]')?.textContent.includes('Select strategy')"), 'empty strategy selector')
@@ -136,6 +163,7 @@ try {
   await evaluate("document.querySelector('.topbar .theme-toggle').click()")
   await pause(150)
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light')
+  assert.equal(await evaluate("getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()"), '#d4dce2')
   const light = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(path.join(artifacts, 'controls-light.png'), Buffer.from(light.data, 'base64'))
   await navigate('Algo Signals')

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, AlertTriangle, ArrowRight, Check, ChevronDown, Code2, FileCode2, LoaderCircle, Play, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X } from 'lucide-react'
 import { NumberField, SelectField } from './FormControls'
+import { InfoTip } from './Notifications'
 import connectionCheckSource from '../backend/strategy_templates/connection_check.py?raw'
 
 export function StrategyLibraryPanel({ request, notify }) {
@@ -166,7 +167,7 @@ export function AutoTradePanel({ request, notify, active = true, onBusyChange })
       <section className="trade-config glass-card"><header className="trade-section-head"><div><span className="trade-kicker">SETUP</span><h2>Trade configuration</h2></div><span className="field-counter">{(selectedStrategy?.parameters?.length || 0) + 4} fields</span></header>
         <div className="trade-field strategy-select"><span>Strategy</span><SelectField label="Strategy" disabled={busy} value={strategyId} onChange={setStrategyId} placeholder="Select strategy" options={strategies.map(item => ({ value: item.id, label: item.name }))} /></div>
         {selectedStrategy && <><div className="trade-field-grid">{basicParameters.map(paramField)}</div>{advancedParameters.length > 0 && <><button className="advanced-toggle" onClick={() => setShowAdvanced(value => !value)}><ChevronDown size={14} className={showAdvanced ? 'rotate' : ''} /> {showAdvanced ? 'Less' : 'More'} options</button>{showAdvanced && <div className="trade-field-grid advanced-fields">{advancedParameters.map(paramField)}</div>}</>}</>}
-        <div className="trade-subhead"><div><span className="trade-kicker">RISK MANAGEMENT</span><h3>Position limits</h3></div><ShieldCheck size={17} /></div>
+        <div className="trade-subhead"><div><span className="trade-kicker">RISK MANAGEMENT</span><div className="heading-with-tip"><h3>Position limits</h3><InfoTip text="These limits cap planned trade size and risk. The backend also checks available funds and account limits before submitting live entries." /></div></div><ShieldCheck size={17} /></div>
         <div className="trade-field-grid risk-fields">{riskFields.map(({ key, ...field }) => <div className="trade-field" key={key}><span>{field.label}</span><NumberField {...field} max={engineStatus.mode === 'live' ? Math.min(field.max, engineStatus.policy?.[policyKeys[key]] ?? field.max) : field.max} value={risk[key]} onChange={riskChange(key)} disabled={busy} /></div>)}</div>
         <div className="trade-action-row"><button className="secondary-button" onClick={runScan} disabled={busy || !strategyId}>{busy ? <LoaderCircle size={15} className="spin" /> : <Play size={14} />} Scan</button><button className="primary-button trade-primary" onClick={beginTrade} disabled={busy || !strategyId || !['paper', 'live'].includes(engineStatus.mode)}>{busy ? <LoaderCircle size={15} className="spin" /> : <ArrowRight size={15} />}{engineStatus.mode === 'paper' ? 'Simulate' : 'Trade'}</button></div>
       </section>

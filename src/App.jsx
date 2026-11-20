@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, BadgeCheck, BarChart3, Check, CircleHelp, Code2, Command, Fingerprint, KeyRound, LayoutDashboard, LoaderCircle, LockKeyhole, LogOut, Moon, Radio, RefreshCw, ScanLine, ShieldCheck, SlidersHorizontal, Sun, TrendingUp, UserRound } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, BadgeCheck, BarChart3, Bell, Check, CircleHelp, Code2, Command, Fingerprint, KeyRound, LayoutDashboard, LoaderCircle, LockKeyhole, LogOut, Moon, Radio, RefreshCw, ScanLine, ShieldCheck, SlidersHorizontal, Sun, TrendingUp, UserRound } from 'lucide-react'
 import { AutoTradePanel, StrategyLibraryPanel } from './TradingPanels'
 import { OverviewPanel, ActivityPanel } from './AccountPanels'
 import { NumberField, RetainedPanel } from './FormControls'
 import { OpeningStopPanel } from './OpeningStopPanel'
+import { InfoTip, NotificationInbox, useNotificationInbox } from './Notifications'
 
 const configuredApi = import.meta.env.VITE_API_URL?.trim().replace(/\/+$/, '')
 // Vite proxies local /api and /ws requests to FastAPI, so the browser keeps one
@@ -85,33 +86,54 @@ function Dashboard({ onLogout, theme, onThemeToggle }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [toasts, setToasts] = useState([])
+  const [localEvents, setLocalEvents] = useState([])
+  const [brokerEvents, setBrokerEvents] = useState([])
+  const [inboxOpen, setInboxOpen] = useState(false)
+  const [inboxError, setInboxError] = useState('')
   const [jobs, setJobs] = useState({})
   const jobHandlers = useMemo(() => Object.fromEntries(['Signals', 'Algo Signals', 'Auto Trade'].map(name => [name, busy => setJobs(current => current[name] === busy ? current : { ...current, [name]: busy })])), [])
-  const seenEventIds = useRef(new Set())
-  const notify = useCallback((title, message, level = 'info') => {
-    const id = `${Date.now()}-${Math.random()}`
-    setToasts(current => [...current.slice(-3), { id, title, message, level }])
-    window.setTimeout(() => setToasts(current => current.filter(item => item.id !== id)), 6500)
+  const events = useMemo(() => [...localEvents, ...brokerEvents].sort((a, b) => new Date(b.at) - new Date(a.at)), [localEvents, brokerEvents])
+  const inbox = useNotificationInbox(profile?.user_id, events)
+  const showToast = useCallback(event => {
+    setToasts(current => [...current.filter(item => item.id !== event.id).slice(-3), event])
+    window.setTimeout(() => setToasts(current => current.filter(item => item.id !== event.id)), 6500)
   }, [])
+  const notify = useCallback((title, message, level = 'info') => {
+    const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`
+    const event = { id: `local-${id}`, at: new Date().toISOString(), title, message, level }
+    setLocalEvents(current => [event, ...current].slice(0, 50))
+    showToast(event)
+  }, [showToast])
   useEffect(() => {
     let alive = true
+    let timer
     let primed = false
+    const seenEventIds = new Set()
     const pollEvents = async () => {
       try {
         const data = await request('/api/auto-trade/events')
         if (!alive) return
-        for (const event of (data.events || []).reverse()) {
-          if (seenEventIds.current.has(event.id)) continue
-          seenEventIds.current.add(event.id)
-          if (primed) notify(event.title, event.message, event.level)
+        const next = data.events || []
+        setBrokerEvents(next)
+        setInboxError('')
+        for (const event of [...next].reverse()) {
+          if (seenEventIds.has(event.id)) continue
+          seenEventIds.add(event.id)
+          if (primed) showToast(event)
         }
         primed = true
-        if (seenEventIds.current.size > 200) seenEventIds.current = new Set([...seenEventIds.current].slice(-100))
-      } catch { /* trading notifications are also persisted in Redis for review */ }
+        if (seenEventIds.size > 300) {
+          for (const id of [...seenEventIds].slice(0, -150)) seenEventIds.delete(id)
+        }
+      } catch {
+        if (alive) setInboxError('Kite alerts couldn’t be refreshed.')
+      } finally {
+        if (alive) timer = window.setTimeout(pollEvents, 15000)
+      }
     }
-    pollEvents(); const timer = window.setInterval(pollEvents, 15000)
-    return () => { alive = false; window.clearInterval(timer) }
-  }, [notify])
+    pollEvents()
+    return () => { alive = false; window.clearTimeout(timer) }
+  }, [showToast])
   const loadProfile = useCallback(async () => {
     setLoading(true); setError('')
     try { setProfile(await request('/api/user/profile')) } catch (e) { setError(e.message) }
@@ -122,12 +144,44 @@ function Dashboard({ onLogout, theme, onThemeToggle }) {
     catch (e) { notify('Sign out needs review', e.message, 'warning') }
   }
   useEffect(() => { loadProfile() }, [loadProfile])
-  const tabs = [{ name: 'Overview', icon: LayoutDashboard }, { name: 'User', icon: UserRound }, { name: 'Signals', icon: Radio }, { name: 'Algo Signals', icon: ScanLine }, { name: 'Strategies', icon: Code2 }, { name: 'Auto Trade', icon: TrendingUp }, { name: 'Opening Stop Loss', icon: ShieldCheck }, { name: 'Activity', icon: BarChart3 }]
+  const tabs = [
+    { name: 'Overview', icon: LayoutDashboard, description: 'Account balances and trading controls.' },
+    { name: 'User', title: 'Your profile', icon: UserRound, description: 'Your Zerodha account and permissions.' },
+    { name: 'Signals', icon: Radio, description: 'Recent moving average crossovers across Nifty 100.' },
+    { name: 'Algo Signals', title: 'High-volume breakout and retest setups', icon: ScanLine },
+    { name: 'Strategies', title: 'Strategy library', icon: Code2, description: 'Manage your saved strategies.' },
+    { name: 'Auto Trade', icon: TrendingUp },
+    { name: 'Opening Stop Loss', icon: ShieldCheck },
+    { name: 'Activity', icon: BarChart3, description: 'Managed orders and account events.' },
+  ]
+  const page = tabs.find(item => item.name === tab)
+  const latestAlert = events.find(event => !inbox.read.has(event.id)) || events[0]
 
   return <div className="dashboard-shell">
-    <aside className="sidebar"><Brand /><div className="side-section-label">WORKSPACE</div><nav>{tabs.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${tab === name ? 'active' : ''}`} onClick={() => setTab(name)}><Icon size={17} /><span>{name}</span>{name === 'User' && <span className="nav-indicator" />}</button>)}</nav><div className="sidebar-bottom"><a href="https://kite.trade/docs/connect/v3/" target="_blank" rel="noreferrer" className="help-link"><CircleHelp size={16} /><span>Kite documentation</span><ArrowUpRight size={14} /></a><div className="sidebar-user"><div className="avatar">{profile?.user_name?.slice(0, 1) || 'K'}</div><div className="side-user-name"><strong>{profile?.user_name || 'Kite account'}</strong><small>{profile?.user_id || 'Connected workspace'}</small></div><button className="icon-button" aria-label="Sign out" onClick={signOut}><LogOut size={16} /></button></div></div></aside>
-    <main className="dashboard-main"><header className="topbar"><div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>{tab}</strong></div><div className="top-actions"><div className="connection-pill"><span className="live-dot" /> Connected</div><ThemeToggle theme={theme} onToggle={onThemeToggle} /><button className="icon-button top-avatar" title="Account" onClick={() => setTab('User')}><UserRound size={17} /></button></div></header>
-      <div className="content-area"><div className="page-title-row"><div><div className="eyebrow page-eyebrow">{tab === 'Signals' ? 'MARKET SCANNER' : tab === 'Algo Signals' ? 'ALGO SIGNALS' : tab === 'Strategies' ? 'LOGIC LIBRARY' : tab === 'Auto Trade' ? 'RISK CONTROLLED EXECUTION' : 'ACCOUNT MANAGEMENT'}</div><h1>{tab === 'User' ? 'Your profile' : tab === 'Algo Signals' ? 'High-volume breakout and retest setups' : tab === 'Strategies' ? 'Strategy logic library' : tab === 'Auto Trade' ? 'Auto Trade' : tab}</h1><p>{tab === 'User' ? 'Your Zerodha account details and permissions.' : tab === 'Overview' ? 'Capital, account health, and execution controls in one place.' : tab === 'Signals' ? 'Find recent moving average crossovers across Nifty 100.' : tab === 'Algo Signals' ? 'Daily volume breakouts that return to retest the breakout midpoint.' : tab === 'Strategies' ? 'Saved strategies and parameters.' : tab === 'Auto Trade' ? 'Strategy execution' : 'Review managed orders, worker alerts, and account events.'}</p></div>{tab === 'User' && <button className="secondary-button" onClick={loadProfile} disabled={loading}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>}</div>
+    <aside className="sidebar">
+      <Brand /><div className="side-section-label">WORKSPACE</div>
+      <nav aria-label="Workspace">{tabs.map(({ name, icon: Icon }) =>
+        <button key={name} type="button" title={name} aria-current={tab === name ? 'page' : undefined} className={`nav-item ${tab === name ? 'active' : ''}`} onClick={() => setTab(name)}><Icon size={18} /><span>{name}</span></button>
+      )}</nav>
+      <div className="sidebar-bottom">
+        <button type="button" className="sidebar-alert" data-inbox-trigger title="Open notifications" aria-expanded={inboxOpen} onClick={() => setInboxOpen(!inboxOpen)}>
+          <span className="sidebar-alert-icon"><Bell size={17} />{inbox.unread > 0 && <i />}</span>
+          <span className="sidebar-alert-text"><strong>{inbox.unread ? `${inbox.unread} unread` : 'Notifications'}</strong><small>{latestAlert?.title || 'All caught up'}</small></span>
+        </button>
+        <a href="https://kite.trade/docs/connect/v3/" target="_blank" rel="noreferrer" className="help-link" title="Kite documentation"><CircleHelp size={16} /><span>Kite documentation</span><ArrowUpRight size={14} /></a>
+        <div className="sidebar-user"><div className="avatar">{profile?.user_name?.slice(0, 1) || 'K'}</div><div className="side-user-name"><strong>{profile?.user_name || 'Kite account'}</strong><small>{profile?.user_id || 'Connected workspace'}</small></div><button className="icon-button" aria-label="Sign out" onClick={signOut}><LogOut size={16} /></button></div>
+      </div>
+    </aside>
+    <main className="dashboard-main">
+      <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>{tab}</strong></div>
+        <div className="top-actions">
+          <div className="connection-pill"><span className={profile ? 'live-dot' : ''} />{profile ? 'Kite connected' : 'Kite'}</div>
+          <NotificationInbox open={inboxOpen} setOpen={setInboxOpen} events={events} {...inbox} error={inboxError} />
+          <ThemeToggle theme={theme} onToggle={onThemeToggle} />
+          <button className="icon-button top-avatar" aria-label="Account" onClick={() => setTab('User')}><UserRound size={17} /></button>
+        </div>
+      </header>
+      <div className="content-area"><div className="page-title-row"><div><h1>{page.title || page.name}</h1>{page.description && <p>{page.description}</p>}</div>{tab === 'User' && <button className="secondary-button" onClick={loadProfile} disabled={loading}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>}</div>
         {Object.keys(jobs).some(name => jobs[name] && name !== tab) && <div className="background-jobs" role="status">{Object.keys(jobs).filter(name => jobs[name] && name !== tab).map(name => <button type="button" className="workspace-job" key={name} onClick={() => setTab(name)}><LoaderCircle size={12} className="spin" />{name} running</button>)}</div>}
         <RetainedPanel active={tab === 'User'} name="User"><>
           <div className="profile-banner"><div className="banner-glow" /><div className="banner-main"><div className="profile-avatar">{profile?.user_name?.slice(0, 1) || <UserRound size={25} />}</div><div><span className="banner-overline">ZERODHA ACCOUNT</span><h2>{loading ? 'Loading profile…' : profile?.user_name || 'Account profile'}</h2><span className="account-id">{profile?.user_id ? `User ID · ${profile.user_id}` : 'Your connected account'}</span></div></div><div className="verified-badge"><BadgeCheck size={15} /> Verified connection</div></div>
@@ -142,11 +196,11 @@ function Dashboard({ onLogout, theme, onThemeToggle }) {
         <RetainedPanel active={tab === 'Algo Signals'} name="Algo Signals"><AlgoSignalsPanel notify={notify} onBusyChange={jobHandlers['Algo Signals']} /></RetainedPanel>
         <RetainedPanel active={tab === 'Strategies'} name="Strategies"><StrategyLibraryPanel request={request} notify={notify} /></RetainedPanel>
         <RetainedPanel active={tab === 'Auto Trade'} name="Auto Trade"><AutoTradePanel request={request} notify={notify} active={tab === 'Auto Trade'} onBusyChange={jobHandlers['Auto Trade']} /></RetainedPanel>
-        <RetainedPanel active={tab === 'Opening Stop Loss'} name="Opening Stop Loss"><OpeningStopPanel request={request} /></RetainedPanel>
+        <RetainedPanel active={tab === 'Opening Stop Loss'} name="Opening Stop Loss"><OpeningStopPanel request={request} notify={notify} /></RetainedPanel>
         <RetainedPanel active={tab === 'Overview'} name="Overview"><OverviewPanel request={request} notify={notify} navigate={setTab} /></RetainedPanel>
         <RetainedPanel active={tab === 'Activity'} name="Activity"><ActivityPanel request={request} notify={notify} /></RetainedPanel>
       </div><footer className="dashboard-footer"><span>Kite Console <span className="footer-sep">·</span> Private workspace</span><span><ShieldCheck size={12} /> Kite Connect</span></footer>
-      {toasts.length > 0 && <div className="toast-stack" aria-live="polite" aria-relevant="additions">{toasts.map(item => <div className={`toast-card ${item.level}`} key={item.id}><span className="toast-mark">{item.level === 'error' || item.level === 'warning' ? <ShieldCheck size={15} /> : <Check size={15} />}</span><div><strong>{item.title}</strong><p>{item.message}</p></div><button className="toast-dismiss" onClick={() => setToasts(current => current.filter(toast => toast.id !== item.id))} aria-label="Dismiss notification">×</button></div>)}</div>}
+      {!inboxOpen && toasts.length > 0 && <div className="toast-stack" aria-live="polite" aria-relevant="additions">{toasts.map(item => <div className={`toast-card ${item.level}`} key={item.id}><span className="toast-mark">{item.level === 'error' || item.level === 'warning' ? <AlertTriangle size={15} /> : <Check size={15} />}</span><div><strong>{item.title}</strong><p>{item.message}</p></div><button className="toast-dismiss" onClick={() => setToasts(current => current.filter(toast => toast.id !== item.id))} aria-label="Dismiss notification">×</button></div>)}</div>}
     </main>
   </div>
 }
@@ -181,7 +235,7 @@ function SignalsPanel({ notify, onBusyChange }) {
   ]
   return <div className="signals-page">
     <section className="scanner-card">
-      <div className="scanner-card-head"><div className="scanner-icon"><SlidersHorizontal size={17} /></div><div><h2>Scanner settings</h2></div></div>
+      <div className="scanner-card-head"><div className="scanner-icon"><SlidersHorizontal size={17} /></div><div className="heading-with-tip"><h2>Scanner settings</h2><InfoTip text="Short and long SMA use daily candles. Lookback days controls how far back to look for a crossover." /></div></div>
       <form onSubmit={generate}>
         <div className="scanner-fields">{fields.map(field => <div className="scanner-field" key={field.key}><span>{field.label}</span><NumberField label={field.label} min={field.min} max={field.max} value={settings[field.key]} onChange={update(field.key)} unit={field.unit} required disabled={busy} /></div>)}</div>
         <div className="scanner-actions"><span className="scanner-hint"><span className="live-dot" /> Scans the current Nifty 100 constituents</span><button className="primary-button generate-button" type="submit" disabled={busy}>{busy ? <><LoaderCircle size={16} className="spin" /> Scanning stocks…</> : <><Radio size={16} /> Generate signals</>}</button></div>
