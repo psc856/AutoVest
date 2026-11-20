@@ -230,6 +230,12 @@ https://invest.example.com/api/health/ready
 
 The UI should show **Live orders**. A strategy scan and final browser confirmation remain mandatory before AutoVest submits an entry GTT.
 
+The same live worker runs the **Opening Stop Loss** tab. Rebuild and recreate both `api` and `trade-worker` when deploying this feature, along with `caddy` for the updated frontend. Keep the EC2 system clock synchronized and verify the deployment's outgoing IP is registered with Kite.
+
+**Apply SL-M** arms a single run for filled NSE/BSE equity MIS longs. Before 9:15 AM IST the worker can fetch positions and orders without placing exits. It uses the first nonempty position snapshot after the open, reads fresh broker data before each batch, and stops once the orders are confirmed or the run expires after three minutes of regular-session time. Use a separate run for later positions. **Stop run** stops further processing and leaves orders already submitted in Kite.
+
+The worker takes a broker snapshot and requires a recent regular-session quote above the proposed trigger. It preserves eligible existing stops and submits any uncovered quantity using Kite's autoslice feature. Broker rejection, incomplete slicing, an already crossed trigger, or a conflicting sell can leave some shares unprotected. Review the quantity and status on the tab and in Kite. Millisecond timestamps show application send attempts. Broker confirmation and fills have no one-second guarantee.
+
 ## 9. Use EC2 for a short trading session
 
 EC2 continues running until you stop it. It does not automatically stop after 30 minutes.

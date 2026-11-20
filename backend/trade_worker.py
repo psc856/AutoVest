@@ -7,7 +7,7 @@ import uuid
 import signal
 import os
 from contextvars import ContextVar
-from threading import Event
+from threading import Event, Thread
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -19,6 +19,7 @@ from .guardrails import RedisLease, LeaseBusy, finite_number
 from .guardrails import LeaseLost
 from .live_config import validate_live_settings, heartbeat_key
 from .order_state import save_monitor, archive_monitor, StateConflict
+from .opening_worker import run as run_opening_stops
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("autoinvest.trade-worker")
@@ -482,6 +483,8 @@ def run() -> None:
         raise RuntimeError('The order worker requires encrypted persistent Redis storage.')
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: _shutdown.set())
+    opening_thread = Thread(target=run_opening_stops, args=(_shutdown,), name='opening-stops')
+    opening_thread.start()
     logging.info('AutoInvest order worker started')
     leader_key = heartbeat_key().replace(':heartbeat', ':leader')
     while not _shutdown.is_set():
@@ -543,6 +546,7 @@ def run() -> None:
             logging.error('Worker storage/service failure: %s', type(exc).__name__)
             _shutdown.wait(15)
     logging.info('Order worker stopped')
+    opening_thread.join()
 
 
 if __name__ == "__main__":

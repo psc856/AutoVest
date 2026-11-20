@@ -47,6 +47,10 @@ except ImportError:  # Vercel's backend root loads main.py as a top-level module
     from strategy_runtime import StrategyValidationError, evaluate_strategy, inspect_strategy
 
 load_dotenv()
+try:
+    from . import opening_worker as opening
+except ImportError:
+    import opening_worker as opening
 # Some managed local runtimes inject this unreachable proxy sentinel. Remove only
 # that placeholder so Kite and Nifty requests can use a direct connection.
 for _proxy_name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
@@ -585,6 +589,10 @@ def logout(request: Request, response: Response) -> dict[str, bool]:
             retain_for_worker = False
             if client and _remote_session_store_enabled():
                 account_id = _account_id(client)
+                opening_job = opening.get_job(_redis_request, account_id)
+                if (opening_job and opening_job['session'] == session_id and opening_job['state'] in opening.ACTIVE
+                        and time.time() < opening_job['deadline']):
+                    raise HTTPException(status_code=409, detail="Stop the active Opening Stop Loss run before signing out.")
                 active_ids = _redis_request("SMEMBERS", f"autoinvest:active:{account_id}") or []
                 stages = []
                 for monitor_id in active_ids:
@@ -839,6 +847,92 @@ def _trade_worker_online() -> bool:
         return math.isfinite(timestamp) and 0 <= time.time() - timestamp < 90
     except (TypeError, ValueError):
         return False
+
+
+def _opening_account(request):
+    client = _current_kite(request)
+    if client is None:
+        raise HTTPException(status_code=401, detail="Please log in to Kite first.")
+    return client, _account_id(client)
+
+
+def _opening_status(job):
+    if not job:
+        return None
+    status = {key: job[key] for key in ('state', 'rows', 'message', 'attempts')}
+    status['confirmations'] = job.get('confirmations', {})
+    if status['state'] in opening.ACTIVE and time.time() >= job['deadline']:
+        status.update(state='review', message='Run expired. Check outstanding protection in Kite.')
+    return status
+
+
+@app.get('/api/opening-stop')
+def opening_stop_status(request: Request, snapshot: bool = False):
+    client, account = _opening_account(request)
+    remote = _remote_session_store_enabled()
+    job = opening.get_job(_redis_request, account) if remote else None
+    online = bool(remote and AUTO_TRADE_MODE == 'live' and _redis_request('GET', opening.HEARTBEAT))
+    result = {'job': _opening_status(job), 'available': online}
+    if snapshot:
+        try:
+            positions = client.positions()['net']
+            orders = client.orders()
+            ticks = opening.tick_sizes(client)
+            result['rows'], _ = opening.plan(positions, orders, ticks)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail='Could not verify positions and stops in Kite.') from exc
+    return result
+
+
+@app.post('/api/opening-stop')
+def start_opening_stop(request: Request):
+    _require_frontend_origin(request)
+    if AUTO_TRADE_MODE != 'live' or not _remote_session_store_enabled() or not _redis_request('GET', opening.HEARTBEAT):
+        raise HTTPException(status_code=503, detail='Opening Stop Loss requires the live worker to be online.')
+    _, account = _opening_account(request)
+    session = _session_id_from_cookie(request.cookies.get(_SESSION_COOKIE))
+    now = opening.market_time()
+    if now.weekday() >= 5 or not now.replace(hour=9, minute=0, second=0, microsecond=0).time() <= now.time() < opening.CUTOFF:
+        raise HTTPException(status_code=409, detail='Arm this on a weekday between 9:00 AM and 3:20 PM IST.')
+    day = now.date().isoformat()
+    try:
+        with RedisLease(_redis_request, _redis_eval, f'autoinvest:account-lock:{account}') as lease:
+            previous = opening.get_job(_redis_request, account)
+            if previous and previous['date'] == day:
+                if previous['state'] in opening.ACTIVE and time.time() < previous['deadline']:
+                    return _opening_status(previous)
+                if previous['pending']:
+                    raise HTTPException(status_code=409, detail='A previous submission is unconfirmed. Verify orders and any slices in Kite before managing this position manually.')
+            start = max(now.timestamp(), now.replace(hour=9, minute=15, second=0, microsecond=0).timestamp())
+            cutoff = datetime.combine(now.date(), opening.CUTOFF, tzinfo=now.tzinfo).timestamp()
+            job = {'account': account, 'session': session, 'date': day, 'queue': opening.QUEUE,
+                   'deadline': min(start + 180, cutoff), 'scope': None, 'pending': {}, 'issues': {},
+                   'rows': [], 'attempts': {}, 'confirmations': {},
+                   'state': 'waiting' if now.time() < opening.OPEN else 'running',
+                   'message': 'Armed for 9:15 AM IST.' if now.time() < opening.OPEN else 'Checking live positions and orders.'}
+            opening.save_job(_redis_eval, job, lease)
+            return _opening_status(job)
+    except LeaseBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post('/api/opening-stop/stop')
+def stop_opening_stop(request: Request):
+    _require_frontend_origin(request)
+    _, account = _opening_account(request)
+    if not _remote_session_store_enabled():
+        return None
+    try:
+        with RedisLease(_redis_request, _redis_eval, f'autoinvest:account-lock:{account}') as lease:
+            job = opening.get_job(_redis_request, account)
+            if job and job['state'] in opening.ACTIVE:
+                if job['queue'] != opening.QUEUE:
+                    raise HTTPException(status_code=409, detail='This run belongs to another deployment.')
+                job.update(state='stopped', message='Run stopped. Existing broker orders remain in Kite.')
+                opening.save_job(_redis_eval, job, lease)
+            return _opening_status(job)
+    except LeaseBusy as exc:
+        raise HTTPException(status_code=409, detail='A broker check is in progress. Retry Stop in a moment.') from exc
 
 
 @app.get("/api/auto-trade/events")

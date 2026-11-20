@@ -3,6 +3,7 @@ import { Activity, AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Badge
 import { AutoTradePanel, StrategyLibraryPanel } from './TradingPanels'
 import { OverviewPanel, ActivityPanel } from './AccountPanels'
 import { NumberField, RetainedPanel } from './FormControls'
+import { OpeningStopPanel } from './OpeningStopPanel'
 
 const configuredApi = import.meta.env.VITE_API_URL?.trim().replace(/\/+$/, '')
 // Vite proxies local /api and /ws requests to FastAPI, so the browser keeps one
@@ -121,7 +122,7 @@ function Dashboard({ onLogout, theme, onThemeToggle }) {
     catch (e) { notify('Sign out needs review', e.message, 'warning') }
   }
   useEffect(() => { loadProfile() }, [loadProfile])
-  const tabs = [{ name: 'Overview', icon: LayoutDashboard }, { name: 'User', icon: UserRound }, { name: 'Signals', icon: Radio }, { name: 'Algo Signals', icon: ScanLine }, { name: 'Strategies', icon: Code2 }, { name: 'Auto Trade', icon: TrendingUp }, { name: 'Activity', icon: BarChart3 }]
+  const tabs = [{ name: 'Overview', icon: LayoutDashboard }, { name: 'User', icon: UserRound }, { name: 'Signals', icon: Radio }, { name: 'Algo Signals', icon: ScanLine }, { name: 'Strategies', icon: Code2 }, { name: 'Auto Trade', icon: TrendingUp }, { name: 'Opening Stop Loss', icon: ShieldCheck }, { name: 'Activity', icon: BarChart3 }]
 
   return <div className="dashboard-shell">
     <aside className="sidebar"><Brand /><div className="side-section-label">WORKSPACE</div><nav>{tabs.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${tab === name ? 'active' : ''}`} onClick={() => setTab(name)}><Icon size={17} /><span>{name}</span>{name === 'User' && <span className="nav-indicator" />}</button>)}</nav><div className="sidebar-bottom"><a href="https://kite.trade/docs/connect/v3/" target="_blank" rel="noreferrer" className="help-link"><CircleHelp size={16} /><span>Kite documentation</span><ArrowUpRight size={14} /></a><div className="sidebar-user"><div className="avatar">{profile?.user_name?.slice(0, 1) || 'K'}</div><div className="side-user-name"><strong>{profile?.user_name || 'Kite account'}</strong><small>{profile?.user_id || 'Connected workspace'}</small></div><button className="icon-button" aria-label="Sign out" onClick={signOut}><LogOut size={16} /></button></div></div></aside>
@@ -141,6 +142,7 @@ function Dashboard({ onLogout, theme, onThemeToggle }) {
         <RetainedPanel active={tab === 'Algo Signals'} name="Algo Signals"><AlgoSignalsPanel notify={notify} onBusyChange={jobHandlers['Algo Signals']} /></RetainedPanel>
         <RetainedPanel active={tab === 'Strategies'} name="Strategies"><StrategyLibraryPanel request={request} notify={notify} /></RetainedPanel>
         <RetainedPanel active={tab === 'Auto Trade'} name="Auto Trade"><AutoTradePanel request={request} notify={notify} active={tab === 'Auto Trade'} onBusyChange={jobHandlers['Auto Trade']} /></RetainedPanel>
+        <RetainedPanel active={tab === 'Opening Stop Loss'} name="Opening Stop Loss"><OpeningStopPanel request={request} /></RetainedPanel>
         <RetainedPanel active={tab === 'Overview'} name="Overview"><OverviewPanel request={request} notify={notify} navigate={setTab} /></RetainedPanel>
         <RetainedPanel active={tab === 'Activity'} name="Activity"><ActivityPanel request={request} notify={notify} /></RetainedPanel>
       </div><footer className="dashboard-footer"><span>Kite Console <span className="footer-sep">·</span> Private workspace</span><span><ShieldCheck size={12} /> Kite Connect</span></footer>
