@@ -5,16 +5,17 @@ import logging
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from decimal import InvalidOperation
 
 try:
     from .guardrails import LeaseBusy, RedisLease
     from .live_config import heartbeat_key
-    from .opening_stop import ACTIVE, CUTOFF, OPEN, fresh_quote, market_time, plan, price
+    from .opening_stop import ACTIVE, CUTOFF, OPEN, fresh_quote, is_intraday_equity, market_time, plan, price
     from .vendor.kite_rest import KiteConnect
 except ImportError:
     from guardrails import LeaseBusy, RedisLease
     from live_config import heartbeat_key
-    from opening_stop import ACTIVE, CUTOFF, OPEN, fresh_quote, market_time, plan, price
+    from opening_stop import ACTIVE, CUTOFF, OPEN, fresh_quote, is_intraday_equity, market_time, plan, price
     from vendor.kite_rest import KiteConnect
 
 log = logging.getLogger(__name__)
@@ -48,17 +49,40 @@ def save_job(evaluate, job, lease):
         raise RuntimeError('Opening protection lease lost')
 
 
-def tick_sizes(client):
+def tick_sizes(client, positions):
     day = market_time().date()
-    if day not in _ticks:
-        values = {}
-        for exchange in ('NSE', 'BSE'):
-            for item in client.instruments(exchange):
-                if item.get('instrument_type') == 'EQ':
-                    values[f"{exchange}:{item['tradingsymbol']}"] = price(item['tick_size'])
-        _ticks.clear()
-        _ticks[day] = values
-    return _ticks[day]
+    exchanges = {p['exchange'] for p in positions if is_intraday_equity(p) and int(p['quantity']) > 0}
+    ticks = {}
+    for exchange in sorted(exchanges):
+        cached = _ticks.get(exchange)
+        if cached is None or cached[0] != day:
+            values = {}
+            ambiguous = set()
+            try:
+                instruments = client.instruments(exchange)
+            except Exception as exc:
+                log.warning('Opening stop instrument lookup failed for %s (%s)', exchange, type(exc).__name__)
+                continue
+            for item in instruments:
+                if item.get('instrument_type') != 'EQ' or not item.get('tradingsymbol'):
+                    continue
+                key = f"{exchange}:{item['tradingsymbol']}"
+                try:
+                    tick = price(item['tick_size'])
+                except (KeyError, TypeError, ValueError, InvalidOperation):
+                    continue
+                if key in values and values[key] != tick:
+                    ambiguous.add(key)
+                values[key] = tick
+            for key in ambiguous:
+                del values[key]
+            if values:
+                cached = (day, values)
+                _ticks[exchange] = cached
+            else:
+                continue
+        ticks.update(cached[1])
+    return ticks
 
 
 def reconcile(intent, orders):
@@ -146,7 +170,7 @@ def run_cycle(client, job, lease, evaluate, budget, shutdown, executor):
     orders = client.orders()
     snapshot_at = time.monotonic()
     positions = client.positions()['net']
-    ticks = tick_sizes(client)
+    ticks = tick_sizes(client, positions)
     rows, actions = plan(positions, orders, ticks, job.get('scope'))
     job['rows'] = rows
     if now.time() < OPEN:

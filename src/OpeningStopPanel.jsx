@@ -75,10 +75,10 @@ export function OpeningStopPanel({ request }) {
     </div>
     {error && <div className="trade-error" role="alert">{error}</div>}
     <div className="trade-notice" role="status">
-      {(!showSnapshot && job?.message) || (data?.available ? 'Applies protection from 9:15 AM IST and stops when this run is confirmed.' : data ? 'Live worker required to apply stops.' : 'Checking Kite positions…')}
+      {(!showSnapshot && job?.message) || (error ? 'Kite data could not be refreshed.' : data?.available ? 'Applies protection from 9:15 AM IST and stops when this run is confirmed.' : data ? 'Live worker required to apply stops.' : 'Checking Kite positions…')}
       {job && !data?.available && ' Live worker is offline.'}
     </div>
-    <div className="preview-summary">
+    {data && <><div className="preview-summary">
       <div><strong>{shown.length}</strong><small>Long positions</small></div>
       <div><strong>{confirmed}</strong><small>Protection confirmed</small></div>
     </div>
@@ -97,6 +97,6 @@ export function OpeningStopPanel({ request }) {
         </tr>)}</tbody>
       </table>
     </div>
-    {!shown.length && <div className="trade-empty compact"><strong>{busy ? 'Checking Kite…' : 'No filled long MIS equity positions'}</strong><p>Pending buys appear once Kite reports a fill.</p></div>}
+    {!shown.length && !error && <div className="trade-empty compact"><strong>{busy || !data ? 'Checking Kite…' : 'No filled long MIS equity positions'}</strong><p>Pending buys appear once Kite reports a fill.</p></div>}</>}
   </section>
 }

@@ -6,7 +6,8 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from backend.opening_stop import IST, fresh_quote, plan
-from backend.opening_worker import reconcile, run_cycle, send
+from backend.opening_worker import reconcile, run_cycle, send, tick_sizes
+from backend import main
 
 NOW = datetime(2026, 11, 23, 9, 15, 0, 300000, tzinfo=IST)
 TICKS = {'NSE:ABC': Decimal('0.05')}
@@ -19,6 +20,29 @@ STOP = {'exchange': 'NSE', 'tradingsymbol': 'ABC', 'product': 'MIS',
 
 
 class OpeningStopTests(TestCase):
+    def test_empty_snapshot_does_not_depend_on_instrument_catalogues(self):
+        client = Mock()
+        client.positions.return_value = {'net': []}
+        with patch.object(main, '_opening_account', return_value=(client, 'account')), \
+             patch.object(main, '_remote_session_store_enabled', return_value=False):
+            result = main.opening_stop_status(Mock(), snapshot=True)
+        self.assertEqual(result['rows'], [])
+        client.orders.assert_not_called()
+        client.instruments.assert_not_called()
+
+    def test_bad_catalogue_rows_and_missing_venue_do_not_hide_valid_stock(self):
+        client = Mock()
+        client.instruments.side_effect = [RuntimeError('BSE unavailable'), [
+            {'instrument_type': 'EQ', 'tradingsymbol': 'BAD', 'tick_size': 0},
+            {'instrument_type': 'EQ', 'tradingsymbol': 'ABC', 'tick_size': 0.05},
+        ]]
+        with patch('backend.opening_worker._ticks', {}):
+            result = tick_sizes(client, [POSITION, dict(POSITION, exchange='BSE')])
+        self.assertEqual(result, TICKS)
+        rows, actions = plan([POSITION, dict(POSITION, exchange='BSE')], [], result)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(rows[1]['status'], 'Instrument tick size unavailable')
+
     def test_targets_uncovered_net_quantity_and_uses_broker_slicing(self):
         rows, actions = plan([POSITION], [STOP], TICKS)
         self.assertEqual(rows[0]['covered'], 40000)

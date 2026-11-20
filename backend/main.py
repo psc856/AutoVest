@@ -10,6 +10,7 @@ import asyncio
 import math
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -866,6 +867,25 @@ def _opening_status(job):
     return status
 
 
+def _opening_snapshot_step(label, operation):
+    try:
+        return operation()
+    except Exception as exc:
+        logging.getLogger(__name__).warning('Opening stop snapshot failed at %s (%s)', label, type(exc).__name__)
+        if type(exc).__name__ == 'TokenException':
+            raise HTTPException(status_code=401, detail='Your Kite session expired. Sign in again and refresh.') from exc
+        if type(exc).__name__ == 'PermissionException':
+            raise HTTPException(status_code=403, detail=f'Kite denied access to {label}. Check your Kite Connect permissions.') from exc
+        raise HTTPException(status_code=502, detail=f'Could not load {label} from Kite. Refresh and try again.') from exc
+
+
+def _opening_positions(client):
+    positions = client.positions()['net']
+    if not isinstance(positions, list):
+        raise ValueError('Invalid positions response')
+    return [p for p in positions if opening.is_intraday_equity(p) and int(p['quantity']) > 0]
+
+
 @app.get('/api/opening-stop')
 def opening_stop_status(request: Request, snapshot: bool = False):
     client, account = _opening_account(request)
@@ -874,13 +894,13 @@ def opening_stop_status(request: Request, snapshot: bool = False):
     online = bool(remote and AUTO_TRADE_MODE == 'live' and _redis_request('GET', opening.HEARTBEAT))
     result = {'job': _opening_status(job), 'available': online}
     if snapshot:
-        try:
-            positions = client.positions()['net']
-            orders = client.orders()
-            ticks = opening.tick_sizes(client)
-            result['rows'], _ = opening.plan(positions, orders, ticks)
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail='Could not verify positions and stops in Kite.') from exc
+        positions = _opening_snapshot_step('intraday positions', lambda: _opening_positions(client))
+        if not positions:
+            result['rows'] = []
+            return result
+        orders = _opening_snapshot_step('the order book', client.orders)
+        ticks = _opening_snapshot_step('instrument tick sizes', lambda: opening.tick_sizes(client, positions))
+        result['rows'], _ = _opening_snapshot_step('stop-loss details', lambda: opening.plan(positions, orders, ticks))
     return result
 
 
