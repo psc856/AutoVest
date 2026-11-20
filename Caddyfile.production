@@ -8,8 +8,13 @@
 
     handle {
         root * /srv
-        try_files {path} /index.html
-        file_server
+        # Revalidate the SPA entry point so browsers discover each new build.
+        @appShell path /index.html
+        route {
+            try_files {path} /index.html
+            header @appShell Cache-Control "no-cache"
+            file_server
+        }
     }
 
     header {
